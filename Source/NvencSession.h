@@ -1,0 +1,76 @@
+#pragma once
+
+#include <d3d11.h>
+#include <string>
+#include <vector>
+#include "nvEncodeAPI.h"
+
+// Owns a minimal NVENC 13.1 session backed by one Direct3D 11 input surface.
+class NvencSession final
+{
+public:
+    using Packet = std::vector<unsigned char>;
+    static constexpr int InputSurfaceCount = 3;
+
+    // Creates an empty encoder session wrapper.
+    NvencSession() = default;
+
+    // Releases every native resource owned by the session.
+    ~NvencSession();
+
+    // Opens NVENC and allocates input textures compatible with the source.
+    void Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int width, int height, int frameRate);
+
+    // Returns the Direct3D texture that must receive the next camera frame.
+    ID3D11Texture2D* InputTexture(int surfaceIndex) const;
+
+    // Encodes the current input texture and returns complete HEVC packets.
+    std::vector<Packet> Encode(int surfaceIndex, long long timestampMicroseconds);
+
+    // Flushes and destroys the encoder session and Direct3D resources.
+    std::vector<Packet> Stop();
+
+private:
+    // Groups the resources required to encode one independently reusable frame.
+    struct Surface
+    {
+        ID3D11Texture2D* texture = nullptr;
+        NV_ENC_REGISTERED_PTR registered = nullptr;
+        NV_ENC_OUTPUT_PTR bitstream = nullptr;
+    };
+
+    HMODULE _library = nullptr;
+    NV_ENCODE_API_FUNCTION_LIST _api = {};
+    void* _encoder = nullptr;
+    std::vector<Surface> _surfaces;
+    NV_ENC_BUFFER_FORMAT _bufferFormat = NV_ENC_BUFFER_FORMAT_UNDEFINED;
+    int _width = 0;
+    int _height = 0;
+
+    // Loads the current NVENC API entry points from the NVIDIA display driver.
+    void LoadApi();
+
+    // Opens an NVENC session against the supplied Direct3D device.
+    void OpenEncoder(ID3D11Device* device);
+
+    // Applies a current high-quality HEVC configuration and initializes NVENC.
+    void InitializeEncoder(int frameRate);
+
+    // Allocates and registers the packed RGB Direct3D input texture.
+    void CreateInputSurfaces(ID3D11Device* device);
+
+    // Allocates the bitstream buffer receiving encoded HEVC data.
+    void CreateBitstreams();
+
+    // Maps the registered input texture for one encode operation.
+    NV_ENC_INPUT_PTR MapInput(const Surface& surface);
+
+    // Copies and unlocks the current encoded bitstream packet.
+    Packet ReadBitstream(const Surface& surface);
+
+    // Releases resources without attempting to emit delayed packets.
+    void ReleaseResources();
+
+    // Throws a descriptive exception when an NVENC call did not succeed.
+    static void Check(NVENCSTATUS status, const char* operation);
+};
