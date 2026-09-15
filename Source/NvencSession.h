@@ -24,7 +24,7 @@ public:
     // Returns the Direct3D texture that must receive the next camera frame.
     ID3D11Texture2D* InputTexture(int surfaceIndex) const;
 
-    // Encodes the current input texture and returns complete HEVC packets.
+    // Encodes the current input texture and returns complete H.264 packets.
     std::vector<Packet> Encode(int surfaceIndex, long long timestampMicroseconds);
 
     // Flushes and destroys the encoder session and Direct3D resources.
@@ -53,13 +53,13 @@ private:
     // Opens an NVENC session against the supplied Direct3D device.
     void OpenEncoder(ID3D11Device* device);
 
-    // Applies a current high-quality HEVC configuration and initializes NVENC.
+    // Applies the target H.264 High 4:2:0 configuration and initializes NVENC.
     void InitializeEncoder(int frameRate);
 
     // Allocates and registers the packed RGB Direct3D input texture.
     void CreateInputSurfaces(ID3D11Device* device);
 
-    // Allocates the bitstream buffer receiving encoded HEVC data.
+    // Allocates the bitstream buffer receiving encoded H.264 data.
     void CreateBitstreams();
 
     // Maps the registered input texture for one encode operation.

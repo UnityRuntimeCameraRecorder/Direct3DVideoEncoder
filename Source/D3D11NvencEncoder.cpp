@@ -1,6 +1,7 @@
 #include <d3d11.h>
 #include <d3d10.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -29,7 +30,7 @@ namespace
         // Releases the session if its caller did not stop it explicitly.
         ~EncoderInstance() { Stop(); }
 
-        // Initializes one HEVC session against the supplied Direct3D texture.
+        // Initializes one H.264 session against the supplied Direct3D texture.
         void Start(void* texturePointer, int width, int height, int frameRate, PacketCallback callback)
         {
             std::lock_guard<std::mutex> lock(_captureMutex);
@@ -70,26 +71,31 @@ namespace
         // Publishes the latest texture and timestamp for the render thread.
         void QueueTexture(void* texturePointer, long long timestampMicroseconds)
         {
-            _pendingTimestamp.store(timestampMicroseconds);
-            _pendingTexture.store(texturePointer);
+            std::lock_guard<std::mutex> lock(_pendingMutex);
+            _pendingFrames.push_back({ texturePointer, timestampMicroseconds });
         }
 
         // Copies one queued texture into a free NVENC surface.
         void ProcessRenderEvent()
         {
-            void* texture = _pendingTexture.exchange(nullptr);
-            long long timestamp = _pendingTimestamp.load();
-            if (!texture) return;
+            PendingFrame pending;
+            {
+                std::lock_guard<std::mutex> pendingLock(_pendingMutex);
+                if (_pendingFrames.empty()) return;
+                pending = _pendingFrames.front();
+                _pendingFrames.pop_front();
+            }
             std::unique_lock<std::mutex> lock(_captureMutex, std::try_to_lock);
             if (!lock.owns_lock() || !_encoder || _freeSurfaces.empty()) { _dropped.fetch_add(1); return; }
             try
             {
                 int index = _freeSurfaces.front();
                 _freeSurfaces.pop_front();
-                _context->CopyResource(_encoder->InputTexture(index), static_cast<ID3D11Texture2D*>(texture));
+                _context->CopyResource(
+                    _encoder->InputTexture(index),
+                    static_cast<ID3D11Texture2D*>(pending.texture));
                 _context->End(_copyQueries.at(index));
-                _context->Flush();
-                _readyFrames.push_back({ index, timestamp });
+                _readyFrames.push_back({ index, pending.timestampMicroseconds });
                 _queued.fetch_add(1);
                 _frameReady.notify_one();
             }
@@ -99,7 +105,7 @@ namespace
         // Flushes the encoder and releases every instance resource.
         void Stop()
         {
-            _pendingTexture.store(nullptr);
+            { std::lock_guard<std::mutex> lock(_pendingMutex); _pendingFrames.clear(); }
             { std::lock_guard<std::mutex> lock(_captureMutex); _workerRunning = false; }
             _frameReady.notify_one();
             if (_encodeThread.joinable()) _encodeThread.join();
@@ -128,15 +134,22 @@ namespace
         unsigned long long Dropped() const { return _dropped.load(); }
 
     private:
+        // Stores one texture submission until its matching Unity render event executes.
+        struct PendingFrame
+        {
+            void* texture = nullptr;
+            long long timestampMicroseconds = 0;
+        };
+
         std::mutex _captureMutex;
+        std::mutex _pendingMutex;
         std::condition_variable _frameReady;
         std::unique_ptr<NvencSession> _encoder;
         ID3D11DeviceContext* _context = nullptr;
         ID3D10Multithread* _multithread = nullptr;
         std::vector<ID3D11Query*> _copyQueries;
         PacketCallback _packetCallback = nullptr;
-        std::atomic<void*> _pendingTexture = nullptr;
-        std::atomic<long long> _pendingTimestamp = 0;
+        std::deque<PendingFrame> _pendingFrames;
         std::thread _encodeThread;
         bool _workerRunning = false;
         std::deque<int> _freeSurfaces;
@@ -167,7 +180,7 @@ namespace
             while (result == S_FALSE)
             {
                 result = _context->GetData(_copyQueries.at(surfaceIndex), &completed, sizeof(completed), 0);
-                if (result == S_FALSE) std::this_thread::yield();
+                if (result == S_FALSE) std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             if (FAILED(result) || !completed) throw std::runtime_error("Direct3D did not complete the camera texture copy.");
         }

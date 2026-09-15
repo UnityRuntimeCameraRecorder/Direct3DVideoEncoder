@@ -59,7 +59,7 @@ ID3D11Texture2D* NvencSession::InputTexture(int surfaceIndex) const
     return _surfaces.at(surfaceIndex).texture;
 }
 
-// Encodes the current input texture and returns complete HEVC packets.
+// Encodes the current input texture and returns complete H.264 packets.
 std::vector<NvencSession::Packet> NvencSession::Encode(int surfaceIndex, long long timestampMicroseconds)
 {
     const Surface& surface = _surfaces.at(surfaceIndex);
@@ -140,30 +140,31 @@ void NvencSession::OpenEncoder(ID3D11Device* device)
     Check(_api.nvEncOpenEncodeSessionEx(&parameters, &_encoder), "nvEncOpenEncodeSessionEx");
 }
 
-// Applies a current high-quality HEVC configuration and initializes NVENC.
+// Applies the target H.264 High 4:2:0 configuration and initializes NVENC.
 void NvencSession::InitializeEncoder(int frameRate)
 {
     NV_ENC_PRESET_CONFIG preset = {};
     preset.version = NV_ENC_PRESET_CONFIG_VER;
     preset.presetCfg.version = NV_ENC_CONFIG_VER;
-    Check(_api.nvEncGetEncodePresetConfigEx(_encoder, NV_ENC_CODEC_HEVC_GUID,
+    Check(_api.nvEncGetEncodePresetConfigEx(_encoder, NV_ENC_CODEC_H264_GUID,
         NV_ENC_PRESET_P5_GUID, NV_ENC_TUNING_INFO_HIGH_QUALITY, &preset), "nvEncGetEncodePresetConfigEx");
     NV_ENC_CONFIG configuration = preset.presetCfg;
     configuration.version = NV_ENC_CONFIG_VER;
-    configuration.profileGUID = NV_ENC_HEVC_PROFILE_FREXT_GUID;
-    configuration.gopLength = frameRate * 2;
+    configuration.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
+    configuration.gopLength = 30;
     configuration.frameIntervalP = 1;
-    configuration.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-    configuration.rcParams.averageBitRate = 160000000;
-    configuration.rcParams.maxBitRate = 320000000;
-    configuration.rcParams.targetQuality = 8;
+    configuration.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+    configuration.rcParams.averageBitRate = 67200000;
+    configuration.rcParams.maxBitRate = 67200000;
+    configuration.rcParams.targetQuality = 0;
     configuration.rcParams.multiPass = NV_ENC_MULTI_PASS_DISABLED;
-    configuration.encodeCodecConfig.hevcConfig.chromaFormatIDC = 3;
-    configuration.encodeCodecConfig.hevcConfig.inputBitDepth = NV_ENC_BIT_DEPTH_8;
-    configuration.encodeCodecConfig.hevcConfig.outputBitDepth = NV_ENC_BIT_DEPTH_8;
-    configuration.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
-    NV_ENC_CONFIG_HEVC_VUI_PARAMETERS& vui =
-        configuration.encodeCodecConfig.hevcConfig.hevcVUIParameters;
+    configuration.encodeCodecConfig.h264Config.chromaFormatIDC = 1;
+    configuration.encodeCodecConfig.h264Config.inputBitDepth = NV_ENC_BIT_DEPTH_8;
+    configuration.encodeCodecConfig.h264Config.outputBitDepth = NV_ENC_BIT_DEPTH_8;
+    configuration.encodeCodecConfig.h264Config.idrPeriod = 30;
+    configuration.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+    NV_ENC_CONFIG_H264_VUI_PARAMETERS& vui =
+        configuration.encodeCodecConfig.h264Config.h264VUIParameters;
     vui.videoSignalTypePresentFlag = 1;
     vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
     vui.videoFullRangeFlag = 0;
@@ -173,7 +174,7 @@ void NvencSession::InitializeEncoder(int frameRate)
     vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
     NV_ENC_INITIALIZE_PARAMS initialize = {};
     initialize.version = NV_ENC_INITIALIZE_PARAMS_VER;
-    initialize.encodeGUID = NV_ENC_CODEC_HEVC_GUID;
+    initialize.encodeGUID = NV_ENC_CODEC_H264_GUID;
     initialize.presetGUID = NV_ENC_PRESET_P5_GUID;
     initialize.tuningInfo = NV_ENC_TUNING_INFO_HIGH_QUALITY;
     initialize.encodeWidth = _width;
