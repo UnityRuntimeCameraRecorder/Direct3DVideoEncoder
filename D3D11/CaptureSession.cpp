@@ -4,31 +4,29 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
-#include "NvencSession.h"
+#include "EncoderSessionFactory.h"
+#include "CaptureSessionFactory.h"
 
 namespace
 {
-    using PacketCallback = void(__stdcall*)(const unsigned char*, int, long long);
-
     // Associates one reusable GPU surface with its source presentation timestamp.
     struct ReadyFrame { int surfaceIndex; long long timestampMicroseconds; };
 
-    // Owns all Direct3D and NVENC state for one independent encoder instance.
-    class EncoderInstance final
+    // Owns all Direct3D and vendor-specific encoding state for one independent encoder instance.
+    class D3D11CaptureSession final : public CaptureSession
     {
     public:
         // Creates an inactive encoder instance.
-        EncoderInstance() = default;
+        D3D11CaptureSession() = default;
 
         // Releases the session if its caller did not stop it explicitly.
-        ~EncoderInstance() { Stop(); }
+        ~D3D11CaptureSession() override { Stop(); }
 
         // Initializes one H.264 session against the supplied Direct3D texture.
         void Start(
@@ -54,18 +52,18 @@ namespace
                 _multithread->SetMultithreadProtected(TRUE);
                 D3D11_QUERY_DESC queryDescription = {};
                 queryDescription.Query = D3D11_QUERY_EVENT;
-                _copyQueries.resize(NvencSession::InputSurfaceCount, nullptr);
+                _copyQueries.resize(EncoderSession::InputSurfaceCount, nullptr);
                 for (ID3D11Query*& query : _copyQueries)
                     if (FAILED(device->CreateQuery(&queryDescription, &query)))
                         throw std::runtime_error("Direct3D could not create a texture copy synchronization query.");
-                _encoder.reset(new NvencSession());
+                _encoder = CreateEncoderSession(device);
                 _encoder->Start(device, description.Format, width, height, frameRate, preset);
                 device->Release();
                 device = nullptr;
                 _packetCallback = callback;
                 _workerRunning = true;
-                for (int index = 0; index < NvencSession::InputSurfaceCount; ++index) _freeSurfaces.push_back(index);
-                _encodeThread = std::thread(&EncoderInstance::EncodeWorker, this);
+                for (int index = 0; index < EncoderSession::InputSurfaceCount; ++index) _freeSurfaces.push_back(index);
+                _encodeThread = std::thread(&D3D11CaptureSession::EncodeWorker, this);
             }
             catch (...)
             {
@@ -75,14 +73,14 @@ namespace
         }
 
         // Publishes the latest texture and timestamp for the render thread.
-        void QueueTexture(void* texturePointer, long long timestampMicroseconds)
+        void QueueTexture(void* texturePointer, long long timestampMicroseconds) override
         {
             std::lock_guard<std::mutex> lock(_pendingMutex);
             _pendingFrames.push_back({ texturePointer, timestampMicroseconds });
         }
 
-        // Copies one queued texture into a free NVENC surface.
-        void ProcessRenderEvent()
+        // Copies one queued texture into a free encoder surface.
+        void ProcessRenderEvent() override
         {
             PendingFrame pending;
             {
@@ -109,7 +107,7 @@ namespace
         }
 
         // Flushes the encoder and releases every instance resource.
-        void Stop()
+        void Stop() override
         {
             { std::lock_guard<std::mutex> lock(_pendingMutex); _pendingFrames.clear(); }
             { std::lock_guard<std::mutex> lock(_captureMutex); _workerRunning = false; }
@@ -131,13 +129,13 @@ namespace
         }
 
         // Returns a stable copy of the latest instance error.
-        std::string LastError() const { std::lock_guard<std::mutex> lock(_errorMutex); return _lastError; }
+        std::string LastError() const override { std::lock_guard<std::mutex> lock(_errorMutex); return _lastError; }
         // Returns the number of accepted frames.
-        unsigned long long Queued() const { return _queued.load(); }
+        unsigned long long Queued() const override { return _queued.load(); }
         // Returns the number of encoded frames.
-        unsigned long long Encoded() const { return _encoded.load(); }
+        unsigned long long Encoded() const override { return _encoded.load(); }
         // Returns the number of dropped frames.
-        unsigned long long Dropped() const { return _dropped.load(); }
+        unsigned long long Dropped() const override { return _dropped.load(); }
 
     private:
         // Stores one texture submission until its matching Unity render event executes.
@@ -150,7 +148,7 @@ namespace
         std::mutex _captureMutex;
         std::mutex _pendingMutex;
         std::condition_variable _frameReady;
-        std::unique_ptr<NvencSession> _encoder;
+        std::unique_ptr<EncoderSession> _encoder;
         ID3D11DeviceContext* _context = nullptr;
         ID3D10Multithread* _multithread = nullptr;
         std::vector<ID3D11Query*> _copyQueries;
@@ -178,7 +176,7 @@ namespace
         }
 
         // Delivers every encoded packet to this instance's caller.
-        void DeliverPackets(const std::vector<NvencSession::Packet>& packets, long long timestamp)
+        void DeliverPackets(const std::vector<EncoderSession::Packet>& packets, long long timestamp)
         {
             if (!_packetCallback) return;
             for (const auto& packet : packets) _packetCallback(packet.data(), static_cast<int>(packet.size()), timestamp);
@@ -215,92 +213,13 @@ namespace
         }
     };
 
-    std::mutex registryMutex;
-    std::map<int, std::shared_ptr<EncoderInstance>> instances;
-    std::atomic<int> nextInstanceId = 1;
-    thread_local std::string exportedError;
-
-    // Finds an instance while retaining it beyond the registry lock.
-    std::shared_ptr<EncoderInstance> FindInstance(int id)
-    {
-        std::lock_guard<std::mutex> lock(registryMutex);
-        auto iterator = instances.find(id);
-        return iterator == instances.end() ? nullptr : iterator->second;
-    }
-
-    // Dispatches a Unity render event to its instance.
-    void __stdcall ProcessRenderEvent(int eventId)
-    {
-        auto instance = FindInstance(eventId);
-        if (instance) instance->ProcessRenderEvent();
-    }
 }
 
-extern "C"
+// Initializes a Direct3D 11 capture session behind the common lifecycle interface.
+std::shared_ptr<CaptureSession> CreateD3D11CaptureSession(
+    void* texture, int width, int height, int frameRate, int preset, PacketCallback callback)
 {
-    // Creates an independent encoder and returns its positive identifier.
-    __declspec(dllexport) int __stdcall D3D11NvencEncoderStart(
-        void* texture,
-        int width,
-        int height,
-        int frameRate,
-        int preset,
-        PacketCallback callback)
-    {
-        try
-        {
-            auto instance = std::make_shared<EncoderInstance>();
-            instance->Start(texture, width, height, frameRate, preset, callback);
-            int id = nextInstanceId.fetch_add(1);
-            if (id <= 0) throw std::overflow_error("The encoder session identifier space is exhausted.");
-            { std::lock_guard<std::mutex> lock(registryMutex); instances.emplace(id, std::move(instance)); }
-            exportedError.clear();
-            return id;
-        }
-        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
-    }
-
-    // Queues a texture for one encoder instance.
-    __declspec(dllexport) void __stdcall D3D11NvencEncoderQueueTexture(int id, void* texture, long long timestamp)
-    {
-        auto instance = FindInstance(id);
-        if (instance) instance->QueueTexture(texture, timestamp);
-    }
-
-    // Returns the shared Unity render-event dispatcher.
-    __declspec(dllexport) void* __stdcall D3D11NvencEncoderGetRenderEventFunction() { return reinterpret_cast<void*>(ProcessRenderEvent); }
-
-    // Flushes one instance while preserving its diagnostics.
-    __declspec(dllexport) void __stdcall D3D11NvencEncoderStop(int id)
-    {
-        auto instance = FindInstance(id);
-        if (instance) instance->Stop();
-    }
-
-    // Removes a stopped instance from the registry.
-    __declspec(dllexport) void __stdcall D3D11NvencEncoderDestroy(int id)
-    {
-        std::lock_guard<std::mutex> lock(registryMutex);
-        instances.erase(id);
-    }
-
-    // Returns the latest instance or creation error.
-    __declspec(dllexport) const char* __stdcall D3D11NvencEncoderGetLastError(int id)
-    {
-        auto instance = FindInstance(id);
-        if (instance) exportedError = instance->LastError();
-        return exportedError.c_str();
-    }
-
-    // Returns the accepted frame count for one instance.
-    __declspec(dllexport) unsigned long long __stdcall D3D11NvencEncoderGetQueuedFrameCount(int id)
-    { auto instance = FindInstance(id); return instance ? instance->Queued() : 0; }
-
-    // Returns the encoded frame count for one instance.
-    __declspec(dllexport) unsigned long long __stdcall D3D11NvencEncoderGetEncodedFrameCount(int id)
-    { auto instance = FindInstance(id); return instance ? instance->Encoded() : 0; }
-
-    // Returns the dropped frame count for one instance.
-    __declspec(dllexport) unsigned long long __stdcall D3D11NvencEncoderGetDroppedFrameCount(int id)
-    { auto instance = FindInstance(id); return instance ? instance->Dropped() : 0; }
+    auto instance = std::make_shared<D3D11CaptureSession>();
+    instance->Start(texture, width, height, frameRate, preset, callback);
+    return instance;
 }

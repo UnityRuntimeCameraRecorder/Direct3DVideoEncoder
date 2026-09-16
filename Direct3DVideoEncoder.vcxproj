@@ -9,7 +9,7 @@
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A70E9E06-744F-47D1-96D4-F18F035E7D88}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>LandoriaD3D11NvencEncoder</RootNamespace>
+    <RootNamespace>Direct3DVideoEncoder</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -21,16 +21,15 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <TargetName>Landoria.D3D11NvencEncoder</TargetName>
+    <TargetName>Direct3DVideoEncoder</TargetName>
     <OutDir>$(ProjectDir)build\$(Platform)\$(Configuration)\</OutDir>
-    <IntDir>$(ProjectDir)build\intermediate\$(Platform)\$(Configuration)\</IntDir>
+    <IntDir>$(ProjectDir)build\intermediate\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)ThirdParty\Nvidia;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;LANDORIA_D3D11_NVENC_ENCODER_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;DIRECT3D_VIDEO_ENCODER_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <WarningLevel>Level4</WarningLevel>
     </ClCompile>
@@ -40,12 +39,21 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="Source\D3D11NvencEncoder.cpp" />
-    <ClCompile Include="Source\NvencSession.cpp" />
+    <ClCompile Include="Direct3DVideoEncoder.cpp" />
+    <ClCompile Include="D3D11\CaptureSession.cpp" />
+    <ClCompile Include="D3D11\Nvidia\NvencSession.cpp" />
+    <ClCompile Include="D3D11\EncoderSessionFactory.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="ThirdParty\Nvidia\nvEncodeAPI.h" />
-    <ClInclude Include="Source\NvencSession.h" />
+    <ClInclude Include="Common\nvEncodeAPI.h" />
+    <ClInclude Include="D3D11\Nvidia\NvencSession.h" />
+    <ClInclude Include="D3D11\EncoderSession.h" />
+    <ClInclude Include="D3D11\EncoderSessionFactory.h" />
+    <ClInclude Include="D3D11\Amd\AmdEncoder.h" />
+    <ClInclude Include="D3D11\Intel\IntelEncoder.h" />
+    <ClInclude Include="Common\NotImplementedException.h" />
+    <ClInclude Include="Common\CaptureSession.h" />
+    <ClInclude Include="D3D11\CaptureSessionFactory.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

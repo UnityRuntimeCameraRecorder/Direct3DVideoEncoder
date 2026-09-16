@@ -3,32 +3,30 @@
 #include <d3d11.h>
 #include <string>
 #include <vector>
-#include "nvEncodeAPI.h"
+#include "../../Common/nvEncodeAPI.h"
+#include "../EncoderSession.h"
 
 // Owns a minimal NVENC 13.1 session backed by one Direct3D 11 input surface.
-class NvencSession final
+class NvencSession final : public EncoderSession
 {
 public:
-    using Packet = std::vector<unsigned char>;
-    static constexpr int InputSurfaceCount = 3;
-
     // Creates an empty encoder session wrapper.
     NvencSession() = default;
 
     // Releases every native resource owned by the session.
-    ~NvencSession();
+    ~NvencSession() override;
 
     // Opens NVENC and allocates input textures compatible with the source.
-    void Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int width, int height, int frameRate, int preset);
+    void Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int width, int height, int frameRate, int preset) override;
 
     // Returns the Direct3D texture that must receive the next camera frame.
-    ID3D11Texture2D* InputTexture(int surfaceIndex) const;
+    ID3D11Texture2D* InputTexture(int surfaceIndex) const override;
 
     // Encodes the current input texture and returns complete H.264 packets.
-    std::vector<Packet> Encode(int surfaceIndex, long long timestampMicroseconds);
+    std::vector<Packet> Encode(int surfaceIndex, long long timestampMicroseconds) override;
 
     // Flushes and destroys the encoder session and Direct3D resources.
-    std::vector<Packet> Stop();
+    std::vector<Packet> Stop() override;
 
 private:
     // Groups the resources required to encode one independently reusable frame.

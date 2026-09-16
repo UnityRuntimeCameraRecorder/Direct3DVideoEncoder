@@ -34,7 +34,7 @@ namespace
     }
 }
 
-// Releases every native resource owned by the session.
+// Releases every native resource owned by the NVIDIA session.
 NvencSession::~NvencSession()
 {
     ReleaseResources();
