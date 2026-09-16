@@ -144,7 +144,10 @@ void NvencSession::OpenEncoder(ID3D11Device* device)
 // Applies the target H.264 High 4:2:0 configuration and initializes NVENC.
 void NvencSession::InitializeEncoder(int frameRate)
 {
-    const GUID presetGuid = _preset <= 4 ? NV_ENC_PRESET_P4_GUID : NV_ENC_PRESET_P5_GUID;
+    if (_preset < 1 || _preset > 7) throw std::runtime_error("NVENC preset must be between P1 and P7.");
+    const GUID presets[] = { NV_ENC_PRESET_P1_GUID, NV_ENC_PRESET_P2_GUID, NV_ENC_PRESET_P3_GUID,
+        NV_ENC_PRESET_P4_GUID, NV_ENC_PRESET_P5_GUID, NV_ENC_PRESET_P6_GUID, NV_ENC_PRESET_P7_GUID };
+    const GUID presetGuid = presets[_preset - 1];
     NV_ENC_PRESET_CONFIG preset = {};
     preset.version = NV_ENC_PRESET_CONFIG_VER;
     preset.presetCfg.version = NV_ENC_CONFIG_VER;
