@@ -36,7 +36,8 @@ namespace
             int height,
             int frameRate,
             int preset,
-            PacketCallback callback)
+            PacketCallback callback,
+            int codec)
         {
             std::lock_guard<std::mutex> lock(_captureMutex);
             auto* texture = static_cast<ID3D11Texture2D*>(texturePointer);
@@ -67,6 +68,10 @@ namespace
                     }
                 }
                 _encoder = CreateEncoderSession(device);
+                if (codec != 0)
+                {
+                    _encoder->ConfigureCodec(codec);
+                }
                 _encoder->Start(device, description.Format, width, height, frameRate, preset);
                 _asynchronous = _encoder->UsesAsyncCompletion();
                 _encoderDiagnostics = _encoder->DiagnosticsJson();
@@ -402,9 +407,9 @@ namespace
 
 // Initializes a Direct3D 11 capture session behind the common lifecycle interface.
 std::shared_ptr<CaptureSession> CreateD3D11CaptureSession(
-    void* texture, int width, int height, int frameRate, int preset, PacketCallback callback)
+    void* texture, int width, int height, int frameRate, int preset, PacketCallback callback, int codec)
 {
     auto instance = std::make_shared<D3D11CaptureSession>();
-    instance->Start(texture, width, height, frameRate, preset, callback);
+    instance->Start(texture, width, height, frameRate, preset, callback, codec);
     return instance;
 }

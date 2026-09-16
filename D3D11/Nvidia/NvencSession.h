@@ -31,6 +31,9 @@ public:
     // Reports the selected codec and the fixed quality configuration for benchmark logs.
     std::string DiagnosticsJson() const override;
 
+    // Selects H.264 or HEVC before starting this independent session.
+    void ConfigureCodec(int codec) override;
+
     // Submits one frame while retaining its input until output completion.
     void Submit(int surfaceIndex, long long timestampMicroseconds) override;
 
@@ -62,6 +65,7 @@ private:
     int _preset = 5;
     bool _asynchronous = false;
     bool _hevc = false;
+    int _codec = 0;
 
     // Loads the current NVENC API entry points from the NVIDIA display driver.
     void LoadApi();

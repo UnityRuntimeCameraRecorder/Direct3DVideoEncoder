@@ -18,10 +18,10 @@ Both codecs use a 67.2 Mbit/s target, a 30-frame GOP without B-frames, and decla
 
 Experimental process-level switches, set before creating a session:
 
-- `DIRECT3D_NVENC_ASYNC=1`: use Windows completion events with separate submission and output workers.
-- `DIRECT3D_NVENC_HEVC=1`: emit HEVC Main instead of H.264 High. The caller must configure its muxer for HEVC; an H.264 declaration will not work. Matching UnityMediaRecorder builds handle this experimental switch.
+- `DIRECT3D_NVENC_ASYNC=0`: opt into synchronous completion for diagnostics. Windows completion events with separate submission and output workers are now the default.
+- `DIRECT3D_NVENC_HEVC=1`: legacy start-call experiment; emit HEVC Main instead of H.264 High. The caller must configure its muxer for HEVC; an H.264 declaration will not work.
 
-Absent or zero-valued switches retain synchronous H.264 defaults. Both codecs retain the same bitrate, GOP and color configuration; this does not guarantee identical compression quality. `Direct3DVideoEncoderGetTelemetry` returns session counters and the selected encoding configuration as JSON, preserved after stopping and until destroying the session.
+New integrations should call `Direct3DVideoEncoderStartWithCodec(texture, width, height, frameRate, preset, codec, callback)`, where codec is `1` for H.264 or `2` for HEVC. This explicit session codec overrides the legacy environment experiment. UnityMediaRecorder uses this export and configures its writer consistently. With no switches, the legacy start export uses asynchronous H.264. Both codecs retain the same bitrate, GOP and color configuration; this does not guarantee identical compression quality. `Direct3DVideoEncoderGetTelemetry` returns session counters and the selected encoding configuration as JSON, preserved after stopping and until destroying the session.
 
 ## Requirements
 

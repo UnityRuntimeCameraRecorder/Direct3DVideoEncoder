@@ -14,6 +14,15 @@ public:
     // Returns optional encoder configuration diagnostics without vendor-specific caller logic.
     virtual std::string DiagnosticsJson() const { return "{}"; }
 
+    // Selects a codec explicitly; placeholders only accept the original H.264 contract.
+    virtual void ConfigureCodec(int codec)
+    {
+        if (codec != 1)
+        {
+            throw std::runtime_error("The selected codec is not supported by this encoder.");
+        }
+    }
+
     // Releases the concrete encoder through the common interface.
     virtual ~EncoderSession() = default;
 

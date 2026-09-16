@@ -48,7 +48,7 @@ void NvencSession::Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int wid
     _bufferFormat = ResolveBufferFormat(sourceFormat);
     _preset = preset;
     wchar_t mode[8] = {};
-    _asynchronous = GetEnvironmentVariableW(L"DIRECT3D_NVENC_ASYNC", mode, 8) == 1 && mode[0] == L'1';
+    _asynchronous = !(GetEnvironmentVariableW(L"DIRECT3D_NVENC_ASYNC", mode, 8) == 1 && mode[0] == L'0');
     LoadApi();
     OpenEncoder(device);
     InitializeEncoder(frameRate);
@@ -179,6 +179,16 @@ void NvencSession::OpenEncoder(ID3D11Device* device)
     Check(_api.nvEncOpenEncodeSessionEx(&parameters, &_encoder), "nvEncOpenEncodeSessionEx");
 }
 
+// Selects H.264 or HEVC before starting this independent session.
+void NvencSession::ConfigureCodec(int codec)
+{
+    if (codec != 1 && codec != 2)
+    {
+        throw std::invalid_argument("Video codec must be 1 (H.264) or 2 (HEVC).");
+    }
+    _codec = codec;
+}
+
 // Reports the selected codec and the fixed quality configuration for benchmark logs.
 std::string NvencSession::DiagnosticsJson() const
 {
@@ -191,7 +201,7 @@ std::string NvencSession::DiagnosticsJson() const
 void NvencSession::InitializeEncoder(int frameRate)
 {
     wchar_t codecMode[8] = {};
-    const bool hevc = GetEnvironmentVariableW(L"DIRECT3D_NVENC_HEVC", codecMode, 8) == 1 && codecMode[0] == L'1';
+    const bool hevc = _codec == 2 || (_codec == 0 && GetEnvironmentVariableW(L"DIRECT3D_NVENC_HEVC", codecMode, 8) == 1 && codecMode[0] == L'1');
     _hevc = hevc;
     const GUID codec = hevc ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
     if (_asynchronous)

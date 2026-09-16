@@ -36,6 +36,29 @@ namespace
 
 extern "C"
 {
+    // Creates an independent session with an explicit codec: 1 is H.264 and 2 is HEVC.
+    __declspec(dllexport) int __stdcall Direct3DVideoEncoderStartWithCodec(
+        void* texture, int width, int height, int frameRate, int preset, int codec, PacketCallback callback)
+    {
+        try
+        {
+            if (codec != 1 && codec != 2)
+            {
+                throw std::invalid_argument("Video codec must be 1 (H.264) or 2 (HEVC).");
+            }
+            auto instance = CreateD3D11CaptureSession(texture, width, height, frameRate, preset, callback, codec);
+            int id = nextInstanceId.fetch_add(1);
+            if (id <= 0)
+            {
+                throw std::overflow_error("The encoder session identifier space is exhausted.");
+            }
+            { std::lock_guard<std::mutex> lock(registryMutex); instances.emplace(id, std::move(instance)); }
+            exportedError.clear();
+            return id;
+        }
+        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+    }
+
     // Creates an independent encoder and returns its positive identifier.
     __declspec(dllexport) int __stdcall Direct3DVideoEncoderStart(
         void* texture,
