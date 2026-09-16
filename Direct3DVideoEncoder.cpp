@@ -13,6 +13,7 @@ namespace
     std::map<int, std::shared_ptr<CaptureSession>> instances;
     std::atomic<int> nextInstanceId = 1;
     thread_local std::string exportedError;
+    thread_local std::string exportedTelemetry;
 
     // Finds an instance while retaining it beyond the registry lock.
     std::shared_ptr<CaptureSession> FindInstance(int id)
@@ -111,4 +112,12 @@ extern "C"
     // Returns the dropped frame count for one instance.
     __declspec(dllexport) unsigned long long __stdcall Direct3DVideoEncoderGetDroppedFrameCount(int id)
     { auto instance = FindInstance(id); return instance ? instance->Dropped() : 0; }
+
+    // Returns session telemetry while retaining the returned string until the next call on this thread.
+    __declspec(dllexport) const char* __stdcall Direct3DVideoEncoderGetTelemetry(int id)
+    {
+        auto instance = FindInstance(id);
+        exportedTelemetry = instance ? instance->Telemetry() : "{}";
+        return exportedTelemetry.c_str();
+    }
 }

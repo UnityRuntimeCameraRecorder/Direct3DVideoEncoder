@@ -47,6 +47,8 @@ void NvencSession::Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int wid
     _height = height;
     _bufferFormat = ResolveBufferFormat(sourceFormat);
     _preset = preset;
+    wchar_t mode[8] = {};
+    _asynchronous = GetEnvironmentVariableW(L"DIRECT3D_NVENC_ASYNC", mode, 8) == 1 && mode[0] == L'1';
     LoadApi();
     OpenEncoder(device);
     InitializeEncoder(frameRate);
@@ -63,27 +65,58 @@ ID3D11Texture2D* NvencSession::InputTexture(int surfaceIndex) const
 // Encodes the current input texture and returns complete H.264 packets.
 std::vector<NvencSession::Packet> NvencSession::Encode(int surfaceIndex, long long timestampMicroseconds)
 {
-    const Surface& surface = _surfaces.at(surfaceIndex);
-    NV_ENC_INPUT_PTR input = MapInput(surface);
+    Submit(surfaceIndex, timestampMicroseconds);
+    return Complete(surfaceIndex);
+}
+
+// Submits a frame without waiting for NVENC completion.
+void NvencSession::Submit(int surfaceIndex, long long timestampMicroseconds)
+{
+    Surface& surface = _surfaces.at(surfaceIndex);
+    surface.mapped = MapInput(surface);
     NV_ENC_PIC_PARAMS picture = {};
     picture.version = NV_ENC_PIC_PARAMS_VER;
-    picture.inputBuffer = input;
+    picture.inputBuffer = surface.mapped;
     picture.bufferFmt = _bufferFormat;
     picture.inputWidth = _width;
     picture.inputHeight = _height;
     picture.outputBitstream = surface.bitstream;
     picture.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
     picture.inputTimeStamp = static_cast<uint64_t>(timestampMicroseconds);
+    picture.completionEvent = surface.completionEvent;
     NVENCSTATUS status = _api.nvEncEncodePicture(_encoder, &picture);
     if (status != NV_ENC_SUCCESS)
     {
-        _api.nvEncUnmapInputResource(_encoder, input);
+        _api.nvEncUnmapInputResource(_encoder, surface.mapped);
+        surface.mapped = nullptr;
         Check(status, "nvEncEncodePicture");
     }
+}
 
-    Packet packet = ReadBitstream(surface);
-    Check(_api.nvEncUnmapInputResource(_encoder, input), "nvEncUnmapInputResource");
-    return { std::move(packet) };
+// Retrieves an output only after its completion event has been signaled.
+std::vector<NvencSession::Packet> NvencSession::Complete(int surfaceIndex)
+{
+    Surface& surface = _surfaces.at(surfaceIndex);
+    if (_asynchronous && WaitForSingleObject(surface.completionEvent, 10000) != WAIT_OBJECT_0)
+    {
+        throw std::runtime_error("NVENC completion event did not signal within ten seconds.");
+    }
+    try
+    {
+        Packet packet = ReadBitstream(surface);
+        Check(_api.nvEncUnmapInputResource(_encoder, surface.mapped), "nvEncUnmapInputResource");
+        surface.mapped = nullptr;
+        return { std::move(packet) };
+    }
+    catch (...)
+    {
+        if (surface.mapped)
+        {
+            _api.nvEncUnmapInputResource(_encoder, surface.mapped);
+            surface.mapped = nullptr;
+        }
+        throw;
+    }
 }
 
 // Flushes and destroys the encoder session and Direct3D resources.
@@ -97,7 +130,12 @@ std::vector<NvencSession::Packet> NvencSession::Stop()
     NV_ENC_PIC_PARAMS end = {};
     end.version = NV_ENC_PIC_PARAMS_VER;
     end.encodePicFlags = NV_ENC_PIC_FLAG_EOS;
+    end.completionEvent = _asynchronous ? _surfaces[0].completionEvent : nullptr;
     Check(_api.nvEncEncodePicture(_encoder, &end), "nvEncEncodePicture(EOS)");
+    if (_asynchronous && WaitForSingleObject(end.completionEvent, 10000) != WAIT_OBJECT_0)
+    {
+        throw std::runtime_error("NVENC end-of-stream event did not signal within ten seconds.");
+    }
     ReleaseResources();
     return {};
 }
@@ -144,6 +182,18 @@ void NvencSession::OpenEncoder(ID3D11Device* device)
 // Applies the target H.264 High 4:2:0 configuration and initializes NVENC.
 void NvencSession::InitializeEncoder(int frameRate)
 {
+    if (_asynchronous)
+    {
+        NV_ENC_CAPS_PARAM caps = {};
+        caps.version = NV_ENC_CAPS_PARAM_VER;
+        caps.capsToQuery = NV_ENC_CAPS_ASYNC_ENCODE_SUPPORT;
+        int supported = 0;
+        Check(_api.nvEncGetEncodeCaps(_encoder, NV_ENC_CODEC_H264_GUID, &caps, &supported), "nvEncGetEncodeCaps(ASYNC)");
+        if (!supported)
+        {
+            throw std::runtime_error("This driver does not support asynchronous NVENC completion.");
+        }
+    }
     if (_preset < 1 || _preset > 7)
     {
         throw std::runtime_error("NVENC preset must be between P1 and P7.");
@@ -192,7 +242,7 @@ void NvencSession::InitializeEncoder(int frameRate)
     initialize.frameRateNum = frameRate;
     initialize.frameRateDen = 1;
     initialize.enablePTD = 1;
-    initialize.enableEncodeAsync = 0;
+    initialize.enableEncodeAsync = _asynchronous ? 1 : 0;
     initialize.encodeConfig = &configuration;
     Check(_api.nvEncInitializeEncoder(_encoder, &initialize), "nvEncInitializeEncoder");
 }
@@ -238,6 +288,19 @@ void NvencSession::CreateBitstreams()
         buffer.version = NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
         Check(_api.nvEncCreateBitstreamBuffer(_encoder, &buffer), "nvEncCreateBitstreamBuffer");
         surface.bitstream = buffer.bitstreamBuffer;
+        if (_asynchronous)
+        {
+            surface.completionEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!surface.completionEvent)
+            {
+                throw std::runtime_error("Cannot create an NVENC completion event.");
+            }
+            NV_ENC_EVENT_PARAMS event = {};
+            event.version = NV_ENC_EVENT_PARAMS_VER;
+            event.completionEvent = surface.completionEvent;
+            Check(_api.nvEncRegisterAsyncEvent(_encoder, &event), "nvEncRegisterAsyncEvent");
+            surface.eventRegistered = true;
+        }
     }
 }
 
@@ -257,7 +320,7 @@ NvencSession::Packet NvencSession::ReadBitstream(const Surface& surface)
     NV_ENC_LOCK_BITSTREAM lock = {};
     lock.version = NV_ENC_LOCK_BITSTREAM_VER;
     lock.outputBitstream = surface.bitstream;
-    lock.doNotWait = 0;
+    lock.doNotWait = _asynchronous ? 1 : 0;
     Check(_api.nvEncLockBitstream(_encoder, &lock), "nvEncLockBitstream");
     const auto* begin = static_cast<const unsigned char*>(lock.bitstreamBufferPtr);
     Packet packet(begin, begin + lock.bitstreamSizeInBytes);
@@ -270,6 +333,21 @@ void NvencSession::ReleaseResources()
 {
     for (Surface& surface : _surfaces)
     {
+        if (_encoder && surface.mapped)
+        {
+            _api.nvEncUnmapInputResource(_encoder, surface.mapped);
+        }
+        if (_encoder && surface.eventRegistered)
+        {
+            NV_ENC_EVENT_PARAMS event = {};
+            event.version = NV_ENC_EVENT_PARAMS_VER;
+            event.completionEvent = surface.completionEvent;
+            _api.nvEncUnregisterAsyncEvent(_encoder, &event);
+        }
+        if (surface.completionEvent)
+        {
+            CloseHandle(surface.completionEvent);
+        }
         if (_encoder && surface.registered)
         {
             _api.nvEncUnregisterResource(_encoder, surface.registered);

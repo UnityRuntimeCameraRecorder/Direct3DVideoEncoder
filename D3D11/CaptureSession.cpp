@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <sstream>
 #include "EncoderSessionFactory.h"
 #include "CaptureSessionFactory.h"
 
@@ -67,10 +68,16 @@ namespace
                 }
                 _encoder = CreateEncoderSession(device);
                 _encoder->Start(device, description.Format, width, height, frameRate, preset);
+                _asynchronous = _encoder->UsesAsyncCompletion();
                 device->Release();
                 device = nullptr;
                 _packetCallback = callback;
                 _workerRunning = true;
+                if (_asynchronous)
+                {
+                    _completionRunning = true;
+                    _completionThread = std::thread(&D3D11CaptureSession::CompletionWorker, this);
+                }
                 for (int index = 0; index < EncoderSession::InputSurfaceCount; ++index)
                 {
                     _freeSurfaces.push_back(index);
@@ -92,6 +99,7 @@ namespace
         {
             std::lock_guard<std::mutex> lock(_pendingMutex);
             _pendingFrames.push_back({ texturePointer, timestampMicroseconds });
+            _requested.fetch_add(1);
         }
 
         // Copies one queued texture into a free encoder surface.
@@ -108,16 +116,30 @@ namespace
                 _pendingFrames.pop_front();
             }
             std::unique_lock<std::mutex> lock(_captureMutex, std::try_to_lock);
-            if (!lock.owns_lock() || !_encoder || _freeSurfaces.empty()) { _dropped.fetch_add(1); return; }
+            if (!lock.owns_lock())
+            {
+                _lockDrops.fetch_add(1);
+                _dropped.fetch_add(1);
+                return;
+            }
+            if (!_encoder || _failed || _freeSurfaces.empty())
+            {
+                _surfaceDrops.fetch_add(1);
+                _dropped.fetch_add(1);
+                return;
+            }
             try
             {
                 int index = _freeSurfaces.front();
                 _freeSurfaces.pop_front();
+                auto copyStart = std::chrono::steady_clock::now();
                 _context->CopyResource(
                     _encoder->InputTexture(index),
                     static_cast<ID3D11Texture2D*>(pending.texture));
                 _context->End(_copyQueries.at(index));
+                _copyMicroseconds.fetch_add(ElapsedMicroseconds(copyStart));
                 _readyFrames.push_back({ index, pending.timestampMicroseconds });
+                _maximumReady.store((std::max)(_maximumReady.load(), _readyFrames.size()));
                 _queued.fetch_add(1);
                 _frameReady.notify_one();
             }
@@ -133,6 +155,15 @@ namespace
             if (_encodeThread.joinable())
             {
                 _encodeThread.join();
+            }
+            {
+                std::lock_guard<std::mutex> lock(_captureMutex);
+                _completionRunning = false;
+            }
+            _outputReady.notify_one();
+            if (_completionThread.joinable())
+            {
+                _completionThread.join();
             }
             std::lock_guard<std::mutex> lock(_captureMutex);
             try
@@ -164,6 +195,32 @@ namespace
         // Returns the number of dropped frames.
         unsigned long long Dropped() const override { return _dropped.load(); }
 
+        // Reports stage timings measured on the CPU, not GPU execution timestamps.
+        std::string Telemetry() const override
+        {
+            std::ostringstream json;
+            auto submitted = _submitted.load();
+            auto completed = _encoded.load();
+            auto average = [](unsigned long long total, unsigned long long count)
+            {
+                return count ? static_cast<double>(total) / count / 1000.0 : 0.0;
+            };
+            json << "{\"async\":" << (_asynchronous ? "true" : "false")
+                << ",\"surfaceCount\":" << EncoderSession::InputSurfaceCount
+                << ",\"requested\":" << _requested.load() << ",\"copied\":" << _queued.load()
+                << ",\"submitted\":" << submitted << ",\"completed\":" << completed
+                << ",\"dropped\":" << _dropped.load() << ",\"lockDrops\":" << _lockDrops.load()
+                << ",\"surfaceDrops\":" << _surfaceDrops.load()
+                << ",\"maxReadyDepth\":" << _maximumReady.load() << ",\"maxCompletionDepth\":" << _maximumCompletion.load()
+                << ",\"copyCallAverageMs\":" << average(_copyMicroseconds.load(), _queued.load())
+                << ",\"gpuWaitAverageMs\":" << average(_gpuWaitMicroseconds.load(), submitted)
+                << ",\"submitAverageMs\":" << average(_submitMicroseconds.load(), submitted)
+                << ",\"completionAverageMs\":" << average(_completionMicroseconds.load(), completed)
+                << ",\"callbackAverageMs\":" << average(_callbackMicroseconds.load(), completed)
+                << ",\"failed\":" << (_failed ? "true" : "false") << "}";
+            return json.str();
+        }
+
     private:
         // Stores one texture submission until its matching Unity render event executes.
         struct PendingFrame
@@ -182,23 +239,45 @@ namespace
         PacketCallback _packetCallback = nullptr;
         std::deque<PendingFrame> _pendingFrames;
         std::thread _encodeThread;
+        std::thread _completionThread;
+        std::condition_variable _outputReady;
+        std::deque<ReadyFrame> _outputFrames;
+        bool _completionRunning = false;
+        bool _asynchronous = false;
+        std::atomic<bool> _failed = false;
         bool _workerRunning = false;
         std::deque<int> _freeSurfaces;
         std::deque<ReadyFrame> _readyFrames;
         std::atomic<unsigned long long> _queued = 0, _encoded = 0, _dropped = 0;
+        std::atomic<unsigned long long> _requested = 0, _submitted = 0, _lockDrops = 0, _surfaceDrops = 0;
+        std::atomic<unsigned long long> _copyMicroseconds = 0, _gpuWaitMicroseconds = 0, _submitMicroseconds = 0;
+        std::atomic<unsigned long long> _completionMicroseconds = 0, _callbackMicroseconds = 0;
+        std::atomic<size_t> _maximumReady = 0, _maximumCompletion = 0;
         mutable std::mutex _errorMutex;
         std::string _lastError;
+
+        // Converts a CPU stage interval to integer microseconds.
+        static unsigned long long ElapsedMicroseconds(std::chrono::steady_clock::time_point start)
+        {
+            return static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start).count());
+        }
 
         // Waits until the Direct3D texture copy has completed.
         void WaitForGpuCopy(int surfaceIndex)
         {
             BOOL completed = FALSE;
             HRESULT result = S_FALSE;
+            auto start = std::chrono::steady_clock::now();
             while (result == S_FALSE)
             {
                 result = _context->GetData(_copyQueries.at(surfaceIndex), &completed, sizeof(completed), 0);
                 if (result == S_FALSE)
                 {
+                    if (std::chrono::steady_clock::now() - start > std::chrono::seconds(10))
+                    {
+                        throw std::runtime_error("Direct3D texture copy did not complete within ten seconds.");
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 }
             }
@@ -244,11 +323,72 @@ namespace
                 lock.unlock();
                 try
                 {
+                    if (_failed)
+                    {
+                        continue;
+                    }
+                    auto stageStart = std::chrono::steady_clock::now();
                     WaitForGpuCopy(frame.surfaceIndex);
-                    DeliverPackets(_encoder->Encode(frame.surfaceIndex, frame.timestampMicroseconds), frame.timestampMicroseconds);
-                    _encoded.fetch_add(1);
+                    _gpuWaitMicroseconds.fetch_add(ElapsedMicroseconds(stageStart));
+                    stageStart = std::chrono::steady_clock::now();
+                    _encoder->Submit(frame.surfaceIndex, frame.timestampMicroseconds);
+                    _submitMicroseconds.fetch_add(ElapsedMicroseconds(stageStart));
+                    _submitted.fetch_add(1);
+                    if (_asynchronous)
+                    {
+                        lock.lock();
+                        _outputFrames.push_back(frame);
+                        _maximumCompletion.store((std::max)(_maximumCompletion.load(), _outputFrames.size()));
+                        _outputReady.notify_one();
+                        continue;
+                    }
+                    CompleteFrame(frame);
                 }
-                catch (const std::exception& exception) { StoreError(exception); }
+                catch (const std::exception& exception)
+                {
+                    StoreError(exception);
+                    _failed = true;
+                }
+                lock.lock();
+                _freeSurfaces.push_back(frame.surfaceIndex);
+            }
+        }
+
+        // Retrieves a completed packet and measures output copy plus transport callback time.
+        void CompleteFrame(const ReadyFrame& frame)
+        {
+            auto start = std::chrono::steady_clock::now();
+            auto packets = _encoder->Complete(frame.surfaceIndex);
+            _completionMicroseconds.fetch_add(ElapsedMicroseconds(start));
+            _encoded.fetch_add(1);
+            start = std::chrono::steady_clock::now();
+            DeliverPackets(packets, frame.timestampMicroseconds);
+            _callbackMicroseconds.fetch_add(ElapsedMicroseconds(start));
+        }
+
+        // Drains completed asynchronous outputs without blocking the submission worker.
+        void CompletionWorker()
+        {
+            while (true)
+            {
+                std::unique_lock<std::mutex> lock(_captureMutex);
+                _outputReady.wait(lock, [this] { return !_outputFrames.empty() || !_completionRunning; });
+                if (_outputFrames.empty() && !_completionRunning)
+                {
+                    return;
+                }
+                ReadyFrame frame = _outputFrames.front();
+                _outputFrames.pop_front();
+                lock.unlock();
+                try
+                {
+                    CompleteFrame(frame);
+                }
+                catch (const std::exception& exception)
+                {
+                    StoreError(exception);
+                    _failed = true;
+                }
                 lock.lock();
                 _freeSurfaces.push_back(frame.surfaceIndex);
             }

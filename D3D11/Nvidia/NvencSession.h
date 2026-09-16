@@ -25,6 +25,15 @@ public:
     // Encodes the current input texture and returns complete H.264 packets.
     std::vector<Packet> Encode(int surfaceIndex, long long timestampMicroseconds) override;
 
+    // Reports the explicitly requested experimental NVENC completion mode.
+    bool UsesAsyncCompletion() const override { return _asynchronous; }
+
+    // Submits one frame while retaining its input until output completion.
+    void Submit(int surfaceIndex, long long timestampMicroseconds) override;
+
+    // Waits on the registered output event and retrieves the completed packet.
+    std::vector<Packet> Complete(int surfaceIndex) override;
+
     // Flushes and destroys the encoder session and Direct3D resources.
     std::vector<Packet> Stop() override;
 
@@ -35,6 +44,9 @@ private:
         ID3D11Texture2D* texture = nullptr;
         NV_ENC_REGISTERED_PTR registered = nullptr;
         NV_ENC_OUTPUT_PTR bitstream = nullptr;
+        NV_ENC_INPUT_PTR mapped = nullptr;
+        HANDLE completionEvent = nullptr;
+        bool eventRegistered = false;
     };
 
     HMODULE _library = nullptr;
@@ -45,6 +57,7 @@ private:
     int _width = 0;
     int _height = 0;
     int _preset = 5;
+    bool _asynchronous = false;
 
     // Loads the current NVENC API entry points from the NVIDIA display driver.
     void LoadApi();

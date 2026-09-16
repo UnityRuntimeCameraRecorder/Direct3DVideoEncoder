@@ -31,4 +31,7 @@ public:
 
     // Returns the number of dropped frames.
     virtual unsigned long long Dropped() const = 0;
+
+    // Returns a JSON snapshot of pipeline counters and CPU stage timings.
+    virtual std::string Telemetry() const = 0;
 };

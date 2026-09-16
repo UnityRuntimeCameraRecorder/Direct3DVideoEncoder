@@ -2,13 +2,14 @@
 
 #include <d3d11.h>
 #include <vector>
+#include <stdexcept>
 
 // Defines the vendor-neutral lifecycle of one Direct3D 11 video encoder session.
 class EncoderSession
 {
 public:
     using Packet = std::vector<unsigned char>;
-    static constexpr int InputSurfaceCount = 3;
+    static constexpr int InputSurfaceCount = 4;
 
     // Releases the concrete encoder through the common interface.
     virtual ~EncoderSession() = default;
@@ -21,6 +22,15 @@ public:
 
     // Encodes one input texture and preserves its presentation timestamp.
     virtual std::vector<Packet> Encode(int surfaceIndex, long long timestampMicroseconds) = 0;
+
+    // Indicates whether submission and output completion can run on separate workers.
+    virtual bool UsesAsyncCompletion() const { return false; }
+
+    // Submits an input surface without waiting for its encoded output.
+    virtual void Submit(int, long long) { throw std::runtime_error("Asynchronous submission is not implemented by this encoder."); }
+
+    // Waits for an asynchronous output and releases its mapped input.
+    virtual std::vector<Packet> Complete(int) { throw std::runtime_error("Asynchronous completion is not implemented by this encoder."); }
 
     // Flushes delayed packets and releases session resources.
     virtual std::vector<Packet> Stop() = 0;
