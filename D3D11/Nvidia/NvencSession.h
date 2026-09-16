@@ -6,7 +6,7 @@
 #include "../../Common/nvEncodeAPI.h"
 #include "../EncoderSession.h"
 
-// Owns a minimal NVENC 13.1 session backed by one Direct3D 11 input surface.
+// Owns an NVENC 13.1 session backed by reusable Direct3D 11 input surfaces.
 class NvencSession final : public EncoderSession
 {
 public:
@@ -22,11 +22,14 @@ public:
     // Returns the Direct3D texture that must receive the next camera frame.
     ID3D11Texture2D* InputTexture(int surfaceIndex) const override;
 
-    // Encodes the current input texture and returns complete H.264 packets.
+    // Encodes the current input texture and returns complete video packets.
     std::vector<Packet> Encode(int surfaceIndex, long long timestampMicroseconds) override;
 
     // Reports the explicitly requested experimental NVENC completion mode.
     bool UsesAsyncCompletion() const override { return _asynchronous; }
+
+    // Reports the selected codec and the fixed quality configuration for benchmark logs.
+    std::string DiagnosticsJson() const override;
 
     // Submits one frame while retaining its input until output completion.
     void Submit(int surfaceIndex, long long timestampMicroseconds) override;
@@ -58,6 +61,7 @@ private:
     int _height = 0;
     int _preset = 5;
     bool _asynchronous = false;
+    bool _hevc = false;
 
     // Loads the current NVENC API entry points from the NVIDIA display driver.
     void LoadApi();
@@ -65,13 +69,13 @@ private:
     // Opens an NVENC session against the supplied Direct3D device.
     void OpenEncoder(ID3D11Device* device);
 
-    // Applies the target H.264 High 4:2:0 configuration and initializes NVENC.
+    // Applies the target H.264 High or HEVC Main 4:2:0 configuration and initializes NVENC.
     void InitializeEncoder(int frameRate);
 
-    // Allocates and registers the packed RGB Direct3D input texture.
+    // Allocates and registers the reusable packed RGB Direct3D input textures.
     void CreateInputSurfaces(ID3D11Device* device);
 
-    // Allocates the bitstream buffer receiving encoded H.264 data.
+    // Allocates one video bitstream buffer per reusable input surface.
     void CreateBitstreams();
 
     // Maps the registered input texture for one encode operation.

@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <vector>
 #include <stdexcept>
+#include <string>
 
 // Defines the vendor-neutral lifecycle of one Direct3D 11 video encoder session.
 class EncoderSession
@@ -10,6 +11,8 @@ class EncoderSession
 public:
     using Packet = std::vector<unsigned char>;
     static constexpr int InputSurfaceCount = 4;
+    // Returns optional encoder configuration diagnostics without vendor-specific caller logic.
+    virtual std::string DiagnosticsJson() const { return "{}"; }
 
     // Releases the concrete encoder through the common interface.
     virtual ~EncoderSession() = default;

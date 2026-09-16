@@ -29,7 +29,7 @@ namespace
         // Releases the session if its caller did not stop it explicitly.
         ~D3D11CaptureSession() override { Stop(); }
 
-        // Initializes one H.264 session against the supplied Direct3D texture.
+        // Initializes one video session against the supplied Direct3D texture.
         void Start(
             void* texturePointer,
             int width,
@@ -69,6 +69,7 @@ namespace
                 _encoder = CreateEncoderSession(device);
                 _encoder->Start(device, description.Format, width, height, frameRate, preset);
                 _asynchronous = _encoder->UsesAsyncCompletion();
+                _encoderDiagnostics = _encoder->DiagnosticsJson();
                 device->Release();
                 device = nullptr;
                 _packetCallback = callback;
@@ -206,6 +207,7 @@ namespace
                 return count ? static_cast<double>(total) / count / 1000.0 : 0.0;
             };
             json << "{\"async\":" << (_asynchronous ? "true" : "false")
+                << ",\"encoder\":" << _encoderDiagnostics
                 << ",\"surfaceCount\":" << EncoderSession::InputSurfaceCount
                 << ",\"requested\":" << _requested.load() << ",\"copied\":" << _queued.load()
                 << ",\"submitted\":" << submitted << ",\"completed\":" << completed
@@ -244,6 +246,7 @@ namespace
         std::deque<ReadyFrame> _outputFrames;
         bool _completionRunning = false;
         bool _asynchronous = false;
+        std::string _encoderDiagnostics = "{}";
         std::atomic<bool> _failed = false;
         bool _workerRunning = false;
         std::deque<int> _freeSurfaces;
