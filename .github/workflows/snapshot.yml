@@ -1,0 +1,82 @@
+name: Snapshot build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snapshot-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows x64
+    # This image supplies the v143 toolset required by the project.
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Build native DLL
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -products '*' -requires Microsoft.Component.MSBuild Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'MSBuild\**\Bin\MSBuild.exe'
+          if ($LASTEXITCODE -ne 0 -or -not $msbuild) {
+            throw 'Visual Studio C++ build tools were not found.'
+          }
+          New-Item -ItemType Directory -Path build -Force | Out-Null
+          & ($msbuild | Select-Object -First 1) Direct3DVideoEncoder.vcxproj /m /p:Configuration=Release /p:Platform=x64 /v:minimal /fl '/flp:logfile=build/snapshot-build.log;verbosity=normal'
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Package snapshot
+        run: |
+          $snapshot = 'build/snapshot'
+          New-Item -ItemType Directory -Path "$snapshot/Common" -Force | Out-Null
+          Copy-Item -LiteralPath 'build/x64/Release/Direct3DVideoEncoder.dll', 'build/x64/Release/Direct3DVideoEncoder.lib', 'LICENSE', 'README.md' -Destination $snapshot
+          # Preserve the NVIDIA header's original copyright and license notice.
+          Copy-Item -LiteralPath 'Common/nvEncodeAPI.h' -Destination "$snapshot/Common"
+          $dll = Get-Item -LiteralPath "$snapshot/Direct3DVideoEncoder.dll"
+          if ($dll.Length -eq 0) {
+            throw 'The compiled DLL is empty.'
+          }
+          [ordered]@{
+            kind = 'snapshot'
+            commit = (git rev-parse HEAD)
+            run = $env:GITHUB_RUN_ID
+            attempt = $env:GITHUB_RUN_ATTEMPT
+            builtUtc = [DateTime]::UtcNow.ToString('O')
+            platform = 'Windows x64'
+            configuration = 'Release'
+            dllSha256 = (Get-FileHash -LiteralPath $dll.FullName -Algorithm SHA256).Hash
+          } | ConvertTo-Json | Set-Content -LiteralPath "$snapshot/build-info.json" -Encoding utf8
+
+      - name: Upload snapshot
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Direct3DVideoEncoder-snapshot-windows-x64-${{ github.sha }}-${{ github.run_attempt }}
+          path: build/snapshot/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Direct3DVideoEncoder-build-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/snapshot-build.log
+          if-no-files-found: ignore
+          retention-days: 30
