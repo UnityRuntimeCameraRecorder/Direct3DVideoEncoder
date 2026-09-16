@@ -39,7 +39,10 @@ namespace
         {
             std::lock_guard<std::mutex> lock(_captureMutex);
             auto* texture = static_cast<ID3D11Texture2D*>(texturePointer);
-            if (!texture || !callback) throw std::invalid_argument("A source texture and packet callback are required.");
+            if (!texture || !callback)
+            {
+                throw std::invalid_argument("A source texture and packet callback are required.");
+            }
             D3D11_TEXTURE2D_DESC description = {};
             texture->GetDesc(&description);
             ID3D11Device* device = nullptr;
@@ -48,26 +51,38 @@ namespace
             {
                 device->GetImmediateContext(&_context);
                 if (FAILED(_context->QueryInterface(__uuidof(ID3D10Multithread), reinterpret_cast<void**>(&_multithread))))
+                {
                     throw std::runtime_error("The Direct3D 11 context does not expose multithread protection.");
+                }
                 _multithread->SetMultithreadProtected(TRUE);
                 D3D11_QUERY_DESC queryDescription = {};
                 queryDescription.Query = D3D11_QUERY_EVENT;
                 _copyQueries.resize(EncoderSession::InputSurfaceCount, nullptr);
                 for (ID3D11Query*& query : _copyQueries)
+                {
                     if (FAILED(device->CreateQuery(&queryDescription, &query)))
+                    {
                         throw std::runtime_error("Direct3D could not create a texture copy synchronization query.");
+                    }
+                }
                 _encoder = CreateEncoderSession(device);
                 _encoder->Start(device, description.Format, width, height, frameRate, preset);
                 device->Release();
                 device = nullptr;
                 _packetCallback = callback;
                 _workerRunning = true;
-                for (int index = 0; index < EncoderSession::InputSurfaceCount; ++index) _freeSurfaces.push_back(index);
+                for (int index = 0; index < EncoderSession::InputSurfaceCount; ++index)
+                {
+                    _freeSurfaces.push_back(index);
+                }
                 _encodeThread = std::thread(&D3D11CaptureSession::EncodeWorker, this);
             }
             catch (...)
             {
-                if (device) device->Release();
+                if (device)
+                {
+                    device->Release();
+                }
                 throw;
             }
         }
@@ -85,7 +100,10 @@ namespace
             PendingFrame pending;
             {
                 std::lock_guard<std::mutex> pendingLock(_pendingMutex);
-                if (_pendingFrames.empty()) return;
+                if (_pendingFrames.empty())
+                {
+                    return;
+                }
                 pending = _pendingFrames.front();
                 _pendingFrames.pop_front();
             }
@@ -112,7 +130,10 @@ namespace
             { std::lock_guard<std::mutex> lock(_pendingMutex); _pendingFrames.clear(); }
             { std::lock_guard<std::mutex> lock(_captureMutex); _workerRunning = false; }
             _frameReady.notify_one();
-            if (_encodeThread.joinable()) _encodeThread.join();
+            if (_encodeThread.joinable())
+            {
+                _encodeThread.join();
+            }
             std::lock_guard<std::mutex> lock(_captureMutex);
             try
             {
@@ -120,7 +141,13 @@ namespace
             }
             catch (const std::exception& exception) { StoreError(exception); }
             if (_context) { _context->Release(); _context = nullptr; }
-            for (ID3D11Query* query : _copyQueries) if (query) query->Release();
+            for (ID3D11Query* query : _copyQueries)
+            {
+                if (query)
+                {
+                    query->Release();
+                }
+            }
             _copyQueries.clear();
             if (_multithread) { _multithread->Release(); _multithread = nullptr; }
             _packetCallback = nullptr;
@@ -170,16 +197,28 @@ namespace
             while (result == S_FALSE)
             {
                 result = _context->GetData(_copyQueries.at(surfaceIndex), &completed, sizeof(completed), 0);
-                if (result == S_FALSE) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (result == S_FALSE)
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
             }
-            if (FAILED(result) || !completed) throw std::runtime_error("Direct3D did not complete the camera texture operation.");
+            if (FAILED(result) || !completed)
+            {
+                throw std::runtime_error("Direct3D did not complete the camera texture operation.");
+            }
         }
 
         // Delivers every encoded packet to this instance's caller.
         void DeliverPackets(const std::vector<EncoderSession::Packet>& packets, long long timestamp)
         {
-            if (!_packetCallback) return;
-            for (const auto& packet : packets) _packetCallback(packet.data(), static_cast<int>(packet.size()), timestamp);
+            if (!_packetCallback)
+            {
+                return;
+            }
+            for (const auto& packet : packets)
+            {
+                _packetCallback(packet.data(), static_cast<int>(packet.size()), timestamp);
+            }
         }
 
         // Stores an exception message for this instance.
@@ -196,7 +235,10 @@ namespace
             {
                 std::unique_lock<std::mutex> lock(_captureMutex);
                 _frameReady.wait(lock, [this] { return !_readyFrames.empty() || !_workerRunning; });
-                if (_readyFrames.empty() && !_workerRunning) return;
+                if (_readyFrames.empty() && !_workerRunning)
+                {
+                    return;
+                }
                 ReadyFrame frame = _readyFrames.front();
                 _readyFrames.pop_front();
                 lock.unlock();

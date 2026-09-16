@@ -26,7 +26,10 @@ namespace
     void __stdcall ProcessRenderEvent(int eventId)
     {
         auto instance = FindInstance(eventId);
-        if (instance) instance->ProcessRenderEvent();
+        if (instance)
+        {
+            instance->ProcessRenderEvent();
+        }
     }
 }
 
@@ -45,7 +48,10 @@ extern "C"
         {
             auto instance = CreateD3D11CaptureSession(texture, width, height, frameRate, preset, callback);
             int id = nextInstanceId.fetch_add(1);
-            if (id <= 0) throw std::overflow_error("The encoder session identifier space is exhausted.");
+            if (id <= 0)
+            {
+                throw std::overflow_error("The encoder session identifier space is exhausted.");
+            }
             { std::lock_guard<std::mutex> lock(registryMutex); instances.emplace(id, std::move(instance)); }
             exportedError.clear();
             return id;
@@ -57,7 +63,10 @@ extern "C"
     __declspec(dllexport) void __stdcall Direct3DVideoEncoderQueueTexture(int id, void* texture, long long timestamp)
     {
         auto instance = FindInstance(id);
-        if (instance) instance->QueueTexture(texture, timestamp);
+        if (instance)
+        {
+            instance->QueueTexture(texture, timestamp);
+        }
     }
 
     // Returns the shared Unity render-event dispatcher.
@@ -67,7 +76,10 @@ extern "C"
     __declspec(dllexport) void __stdcall Direct3DVideoEncoderStop(int id)
     {
         auto instance = FindInstance(id);
-        if (instance) instance->Stop();
+        if (instance)
+        {
+            instance->Stop();
+        }
     }
 
     // Removes a stopped instance from the registry.
@@ -81,7 +93,10 @@ extern "C"
     __declspec(dllexport) const char* __stdcall Direct3DVideoEncoderGetLastError(int id)
     {
         auto instance = FindInstance(id);
-        if (instance) exportedError = instance->LastError();
+        if (instance)
+        {
+            exportedError = instance->LastError();
+        }
         return exportedError.c_str();
     }
 

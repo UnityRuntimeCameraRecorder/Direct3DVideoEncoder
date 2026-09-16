@@ -144,7 +144,10 @@ void NvencSession::OpenEncoder(ID3D11Device* device)
 // Applies the target H.264 High 4:2:0 configuration and initializes NVENC.
 void NvencSession::InitializeEncoder(int frameRate)
 {
-    if (_preset < 1 || _preset > 7) throw std::runtime_error("NVENC preset must be between P1 and P7.");
+    if (_preset < 1 || _preset > 7)
+    {
+        throw std::runtime_error("NVENC preset must be between P1 and P7.");
+    }
     const GUID presets[] = { NV_ENC_PRESET_P1_GUID, NV_ENC_PRESET_P2_GUID, NV_ENC_PRESET_P3_GUID,
         NV_ENC_PRESET_P4_GUID, NV_ENC_PRESET_P5_GUID, NV_ENC_PRESET_P6_GUID, NV_ENC_PRESET_P7_GUID };
     const GUID presetGuid = presets[_preset - 1];
@@ -267,13 +270,28 @@ void NvencSession::ReleaseResources()
 {
     for (Surface& surface : _surfaces)
     {
-        if (_encoder && surface.registered) _api.nvEncUnregisterResource(_encoder, surface.registered);
-        if (_encoder && surface.bitstream) _api.nvEncDestroyBitstreamBuffer(_encoder, surface.bitstream);
-        if (surface.texture) surface.texture->Release();
+        if (_encoder && surface.registered)
+        {
+            _api.nvEncUnregisterResource(_encoder, surface.registered);
+        }
+        if (_encoder && surface.bitstream)
+        {
+            _api.nvEncDestroyBitstreamBuffer(_encoder, surface.bitstream);
+        }
+        if (surface.texture)
+        {
+            surface.texture->Release();
+        }
     }
     _surfaces.clear();
-    if (_encoder) _api.nvEncDestroyEncoder(_encoder);
-    if (_library) FreeLibrary(_library);
+    if (_encoder)
+    {
+        _api.nvEncDestroyEncoder(_encoder);
+    }
+    if (_library)
+    {
+        FreeLibrary(_library);
+    }
     _encoder = nullptr;
     _library = nullptr;
 }
