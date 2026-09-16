@@ -19,7 +19,7 @@ public:
     ~NvencSession();
 
     // Opens NVENC and allocates input textures compatible with the source.
-    void Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int width, int height, int frameRate);
+    void Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int width, int height, int frameRate, int preset);
 
     // Returns the Direct3D texture that must receive the next camera frame.
     ID3D11Texture2D* InputTexture(int surfaceIndex) const;
@@ -46,6 +46,7 @@ private:
     NV_ENC_BUFFER_FORMAT _bufferFormat = NV_ENC_BUFFER_FORMAT_UNDEFINED;
     int _width = 0;
     int _height = 0;
+    int _preset = 5;
 
     // Loads the current NVENC API entry points from the NVIDIA display driver.
     void LoadApi();

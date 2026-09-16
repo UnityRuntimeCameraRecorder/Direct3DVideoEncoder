@@ -41,11 +41,12 @@ NvencSession::~NvencSession()
 }
 
 // Opens NVENC and allocates input textures compatible with the source.
-void NvencSession::Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int width, int height, int frameRate)
+void NvencSession::Start(ID3D11Device* device, DXGI_FORMAT sourceFormat, int width, int height, int frameRate, int preset)
 {
     _width = width;
     _height = height;
     _bufferFormat = ResolveBufferFormat(sourceFormat);
+    _preset = preset;
     LoadApi();
     OpenEncoder(device);
     InitializeEncoder(frameRate);
@@ -143,11 +144,12 @@ void NvencSession::OpenEncoder(ID3D11Device* device)
 // Applies the target H.264 High 4:2:0 configuration and initializes NVENC.
 void NvencSession::InitializeEncoder(int frameRate)
 {
+    const GUID presetGuid = _preset <= 4 ? NV_ENC_PRESET_P4_GUID : NV_ENC_PRESET_P5_GUID;
     NV_ENC_PRESET_CONFIG preset = {};
     preset.version = NV_ENC_PRESET_CONFIG_VER;
     preset.presetCfg.version = NV_ENC_CONFIG_VER;
     Check(_api.nvEncGetEncodePresetConfigEx(_encoder, NV_ENC_CODEC_H264_GUID,
-        NV_ENC_PRESET_P5_GUID, NV_ENC_TUNING_INFO_HIGH_QUALITY, &preset), "nvEncGetEncodePresetConfigEx");
+        presetGuid, NV_ENC_TUNING_INFO_HIGH_QUALITY, &preset), "nvEncGetEncodePresetConfigEx");
     NV_ENC_CONFIG configuration = preset.presetCfg;
     configuration.version = NV_ENC_CONFIG_VER;
     configuration.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
@@ -175,7 +177,7 @@ void NvencSession::InitializeEncoder(int frameRate)
     NV_ENC_INITIALIZE_PARAMS initialize = {};
     initialize.version = NV_ENC_INITIALIZE_PARAMS_VER;
     initialize.encodeGUID = NV_ENC_CODEC_H264_GUID;
-    initialize.presetGUID = NV_ENC_PRESET_P5_GUID;
+    initialize.presetGUID = presetGuid;
     initialize.tuningInfo = NV_ENC_TUNING_INFO_HIGH_QUALITY;
     initialize.encodeWidth = _width;
     initialize.encodeHeight = _height;

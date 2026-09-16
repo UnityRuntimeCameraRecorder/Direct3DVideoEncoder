@@ -31,7 +31,13 @@ namespace
         ~EncoderInstance() { Stop(); }
 
         // Initializes one H.264 session against the supplied Direct3D texture.
-        void Start(void* texturePointer, int width, int height, int frameRate, PacketCallback callback)
+        void Start(
+            void* texturePointer,
+            int width,
+            int height,
+            int frameRate,
+            int preset,
+            PacketCallback callback)
         {
             std::lock_guard<std::mutex> lock(_captureMutex);
             auto* texture = static_cast<ID3D11Texture2D*>(texturePointer);
@@ -53,7 +59,7 @@ namespace
                     if (FAILED(device->CreateQuery(&queryDescription, &query)))
                         throw std::runtime_error("Direct3D could not create a texture copy synchronization query.");
                 _encoder.reset(new NvencSession());
-                _encoder->Start(device, description.Format, width, height, frameRate);
+                _encoder->Start(device, description.Format, width, height, frameRate, preset);
                 device->Release();
                 device = nullptr;
                 _packetCallback = callback;
@@ -158,6 +164,19 @@ namespace
         mutable std::mutex _errorMutex;
         std::string _lastError;
 
+        // Waits until the Direct3D texture copy has completed.
+        void WaitForGpuCopy(int surfaceIndex)
+        {
+            BOOL completed = FALSE;
+            HRESULT result = S_FALSE;
+            while (result == S_FALSE)
+            {
+                result = _context->GetData(_copyQueries.at(surfaceIndex), &completed, sizeof(completed), 0);
+                if (result == S_FALSE) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (FAILED(result) || !completed) throw std::runtime_error("Direct3D did not complete the camera texture operation.");
+        }
+
         // Delivers every encoded packet to this instance's caller.
         void DeliverPackets(const std::vector<NvencSession::Packet>& packets, long long timestamp)
         {
@@ -170,19 +189,6 @@ namespace
         {
             std::lock_guard<std::mutex> lock(_errorMutex);
             _lastError = exception.what();
-        }
-
-        // Waits for one asynchronous Direct3D texture copy.
-        void WaitForGpuCopy(int surfaceIndex)
-        {
-            BOOL completed = FALSE;
-            HRESULT result = S_FALSE;
-            while (result == S_FALSE)
-            {
-                result = _context->GetData(_copyQueries.at(surfaceIndex), &completed, sizeof(completed), 0);
-                if (result == S_FALSE) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            if (FAILED(result) || !completed) throw std::runtime_error("Direct3D did not complete the camera texture copy.");
         }
 
         // Encodes copied frames away from the render thread.
@@ -233,12 +239,18 @@ namespace
 extern "C"
 {
     // Creates an independent encoder and returns its positive identifier.
-    __declspec(dllexport) int __stdcall D3D11NvencEncoderStart(void* texture, int width, int height, int frameRate, PacketCallback callback)
+    __declspec(dllexport) int __stdcall D3D11NvencEncoderStart(
+        void* texture,
+        int width,
+        int height,
+        int frameRate,
+        int preset,
+        PacketCallback callback)
     {
         try
         {
             auto instance = std::make_shared<EncoderInstance>();
-            instance->Start(texture, width, height, frameRate, callback);
+            instance->Start(texture, width, height, frameRate, preset, callback);
             int id = nextInstanceId.fetch_add(1);
             if (id <= 0) throw std::overflow_error("The encoder session identifier space is exhausted.");
             { std::lock_guard<std::mutex> lock(registryMutex); instances.emplace(id, std::move(instance)); }

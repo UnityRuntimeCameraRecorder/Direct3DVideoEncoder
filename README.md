@@ -8,7 +8,7 @@ It receives timestamped Direct3D 11 textures and encodes them as H.264 High 8-bi
 
 Each start call returns an independent session identifier. Texture queues, render events, worker threads, errors and frame counters are isolated per session, so several encoders can run concurrently in the same process. Stopping a session preserves its diagnostics until the caller destroys that session.
 
-The H.264 stream uses a 67.2 Mbit/s target, a 30-frame GOP without B-frames, and declares limited-range BT.709 color primaries, transfer characteristics and matrix coefficients.
+The H.264 stream uses a 67.2 Mbit/s target, a 30-frame GOP without B-frames, and declares limited-range BT.709 color primaries, transfer characteristics and matrix coefficients. Callers select NVENC preset P5 for maximum quality or P4 for higher multi-session throughput.
 
 ## Requirements
 
