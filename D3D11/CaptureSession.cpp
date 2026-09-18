@@ -37,7 +37,7 @@ namespace
             int frameRate,
             int preset,
             PacketCallback callback,
-            int codec)
+            int codec, int averageBitRate, int maximumBitRate, int constantQuality, int quantizationParameter)
         {
             std::lock_guard<std::mutex> lock(_captureMutex);
             auto* texture = static_cast<ID3D11Texture2D*>(texturePointer);
@@ -57,9 +57,17 @@ namespace
                     throw std::runtime_error("The Direct3D 11 context does not expose multithread protection.");
                 }
                 _multithread->SetMultithreadProtected(TRUE);
+                _encoder = CreateEncoderSession(device);
+                if (codec != 0)
+                {
+                    _encoder->ConfigureCodec(codec);
+                }
+                if (quantizationParameter > 0) _encoder->ConfigureConstantQP(quantizationParameter);
+                if (averageBitRate > 0) _encoder->ConfigureQuality(averageBitRate, maximumBitRate, constantQuality);
+                _encoder->Start(device, description.Format, width, height, frameRate, preset);
                 D3D11_QUERY_DESC queryDescription = {};
                 queryDescription.Query = D3D11_QUERY_EVENT;
-                _copyQueries.resize(EncoderSession::InputSurfaceCount, nullptr);
+                _copyQueries.resize(_encoder->SurfaceCount(), nullptr);
                 for (ID3D11Query*& query : _copyQueries)
                 {
                     if (FAILED(device->CreateQuery(&queryDescription, &query)))
@@ -67,13 +75,10 @@ namespace
                         throw std::runtime_error("Direct3D could not create a texture copy synchronization query.");
                     }
                 }
-                _encoder = CreateEncoderSession(device);
-                if (codec != 0)
-                {
-                    _encoder->ConfigureCodec(codec);
-                }
-                _encoder->Start(device, description.Format, width, height, frameRate, preset);
-                _asynchronous = _encoder->UsesAsyncCompletion();
+                _asynchronous = _encoder->UsesCompletionWorker();
+                _surfaceCount = _encoder->SurfaceCount();
+                _frameRate = frameRate;
+                _eventCompletion = _encoder->UsesAsyncCompletion();
                 _encoderDiagnostics = _encoder->DiagnosticsJson();
                 device->Release();
                 device = nullptr;
@@ -84,7 +89,7 @@ namespace
                     _completionRunning = true;
                     _completionThread = std::thread(&D3D11CaptureSession::CompletionWorker, this);
                 }
-                for (int index = 0; index < EncoderSession::InputSurfaceCount; ++index)
+                for (int index = 0; index < _surfaceCount; ++index)
                 {
                     _freeSurfaces.push_back(index);
                 }
@@ -211,11 +216,13 @@ namespace
             {
                 return count ? static_cast<double>(total) / count / 1000.0 : 0.0;
             };
-            json << "{\"async\":" << (_asynchronous ? "true" : "false")
+            json << "{\"async\":" << (_eventCompletion ? "true" : "false")
                 << ",\"encoder\":" << _encoderDiagnostics
-                << ",\"surfaceCount\":" << EncoderSession::InputSurfaceCount
+                << ",\"surfaceCount\":" << _surfaceCount
                 << ",\"requested\":" << _requested.load() << ",\"copied\":" << _queued.load()
                 << ",\"submitted\":" << submitted << ",\"completed\":" << completed
+                << ",\"encodedBytes\":" << _encodedBytes.load()
+                << ",\"measuredVideoBitRate\":" << (_encoded.load() ? _encodedBytes.load() * 8.0 / ((_lastOutputTimestamp.load() - _firstOutputTimestamp.load()) / 1000000.0 + 1.0 / _frameRate) : 0.0)
                 << ",\"dropped\":" << _dropped.load() << ",\"lockDrops\":" << _lockDrops.load()
                 << ",\"surfaceDrops\":" << _surfaceDrops.load()
                 << ",\"maxReadyDepth\":" << _maximumReady.load() << ",\"maxCompletionDepth\":" << _maximumCompletion.load()
@@ -236,6 +243,11 @@ namespace
             long long timestampMicroseconds = 0;
         };
 
+        int _surfaceCount = EncoderSession::InputSurfaceCount, _frameRate = 60;
+        bool _eventCompletion = false;
+        std::atomic<unsigned long long> _encodedBytes{0};
+        std::atomic<long long> _firstOutputTimestamp{0}, _lastOutputTimestamp{0};
+        std::deque<ReadyFrame> _delayedFrames;
         std::mutex _captureMutex;
         std::mutex _pendingMutex;
         std::condition_variable _frameReady;
@@ -324,6 +336,12 @@ namespace
                 _frameReady.wait(lock, [this] { return !_readyFrames.empty() || !_workerRunning; });
                 if (_readyFrames.empty() && !_workerRunning)
                 {
+                    lock.unlock();
+                    try { _encoder->BeginDrain(); }
+                    catch (const std::exception& exception) { StoreError(exception); _failed = true; }
+                    lock.lock();
+                    while (!_delayedFrames.empty()) { _outputFrames.push_back(_delayedFrames.front()); _delayedFrames.pop_front(); }
+                    _outputReady.notify_one();
                     return;
                 }
                 ReadyFrame frame = _readyFrames.front();
@@ -345,7 +363,9 @@ namespace
                     if (_asynchronous)
                     {
                         lock.lock();
-                        _outputFrames.push_back(frame);
+                        _delayedFrames.push_back(frame);
+                        if (static_cast<int>(_delayedFrames.size()) > _encoder->CompletionDelay())
+                        { _outputFrames.push_back(_delayedFrames.front()); _delayedFrames.pop_front(); }
                         _maximumCompletion.store((std::max)(_maximumCompletion.load(), _outputFrames.size()));
                         _outputReady.notify_one();
                         continue;
@@ -368,9 +388,13 @@ namespace
             auto start = std::chrono::steady_clock::now();
             auto packets = _encoder->Complete(frame.surfaceIndex);
             _completionMicroseconds.fetch_add(ElapsedMicroseconds(start));
+            long long timestamp = _encoder->OutputTimestamp(frame.timestampMicroseconds);
+            if (_encoded.load() == 0) _firstOutputTimestamp.store(timestamp);
+            _lastOutputTimestamp.store((std::max)(_lastOutputTimestamp.load(), timestamp));
+            for (const auto& packet : packets) _encodedBytes.fetch_add(packet.size());
             _encoded.fetch_add(1);
             start = std::chrono::steady_clock::now();
-            DeliverPackets(packets, frame.timestampMicroseconds);
+            DeliverPackets(packets, _encoder->OutputTimestamp(frame.timestampMicroseconds));
             _callbackMicroseconds.fetch_add(ElapsedMicroseconds(start));
         }
 
@@ -407,9 +431,9 @@ namespace
 
 // Initializes a Direct3D 11 capture session behind the common lifecycle interface.
 std::shared_ptr<CaptureSession> CreateD3D11CaptureSession(
-    void* texture, int width, int height, int frameRate, int preset, PacketCallback callback, int codec)
+    void* texture, int width, int height, int frameRate, int preset, PacketCallback callback, int codec, int averageBitRate, int maximumBitRate, int constantQuality, int quantizationParameter)
 {
     auto instance = std::make_shared<D3D11CaptureSession>();
-    instance->Start(texture, width, height, frameRate, preset, callback, codec);
+    instance->Start(texture, width, height, frameRate, preset, callback, codec, averageBitRate, maximumBitRate, constantQuality, quantizationParameter);
     return instance;
 }

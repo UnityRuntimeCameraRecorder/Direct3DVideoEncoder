@@ -36,6 +36,49 @@ namespace
 
 extern "C"
 {
+    __declspec(dllexport) int __stdcall Direct3DVideoEncoderStartWithConstantQP(
+        void* texture, int width, int height, int frameRate, int codec, int qp, PacketCallback callback)
+    {
+        try
+        {
+            if (codec != 1 && codec != 2) throw std::invalid_argument("Invalid SDR video codec.");
+            if (width <= 0 || height <= 0 || (width & 1) || (height & 1) || frameRate <= 0 || qp < 1 || qp > 51)
+                throw std::invalid_argument("Invalid SDR dimensions, frame rate or QP.");
+            auto instance = CreateD3D11CaptureSession(texture, width, height, frameRate, 5, callback, codec, 0, 0, 0, qp);
+            int id = nextInstanceId.fetch_add(1);
+            if (id <= 0) throw std::overflow_error("Encoder identifiers exhausted.");
+            { std::lock_guard<std::mutex> lock(registryMutex); instances.emplace(id, std::move(instance)); }
+            exportedError.clear();
+            return id;
+        }
+        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+    }
+
+    // Creates an independent session with an explicit codec: 1 is H.264 and 2 is HEVC.
+    __declspec(dllexport) int __stdcall Direct3DVideoEncoderStartWithQuality(
+        void* texture, int width, int height, int frameRate, int preset, int codec, int averageBitRate, int maximumBitRate, int constantQuality, PacketCallback callback)
+    {
+        try
+        {
+            if (codec != 1 && codec != 2)
+            {
+                throw std::invalid_argument("Video codec must be 1 (H.264) or 2 (HEVC).");
+            }
+            if (averageBitRate <= 0 || maximumBitRate < averageBitRate || constantQuality < 1 || constantQuality > 51)
+                throw std::invalid_argument("Invalid quality profile rates.");
+            auto instance = CreateD3D11CaptureSession(texture, width, height, frameRate, preset, callback, codec, averageBitRate, maximumBitRate, constantQuality);
+            int id = nextInstanceId.fetch_add(1);
+            if (id <= 0)
+            {
+                throw std::overflow_error("The encoder session identifier space is exhausted.");
+            }
+            { std::lock_guard<std::mutex> lock(registryMutex); instances.emplace(id, std::move(instance)); }
+            exportedError.clear();
+            return id;
+        }
+        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+    }
+
     // Creates an independent session with an explicit codec: 1 is H.264 and 2 is HEVC.
     __declspec(dllexport) int __stdcall Direct3DVideoEncoderStartWithCodec(
         void* texture, int width, int height, int frameRate, int preset, int codec, PacketCallback callback)

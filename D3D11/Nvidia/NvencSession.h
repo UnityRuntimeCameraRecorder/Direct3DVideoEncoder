@@ -33,6 +33,13 @@ public:
 
     // Selects H.264 or HEVC before starting this independent session.
     void ConfigureCodec(int codec) override;
+    void ConfigureConstantQP(int qp) override;
+    int SurfaceCount() const override { return _qp ? 16 : InputSurfaceCount; }
+    bool UsesCompletionWorker() const override { return _asynchronous || _qp != 0; }
+    int CompletionDelay() const override { return !_asynchronous && _qp ? _lookahead + _bFrames + 3 : 0; }
+    void BeginDrain() override;
+    long long OutputTimestamp(long long) const override { return _outputTimestamp; }
+    void ConfigureQuality(int averageBitRate, int maximumBitRate, int constantQuality) override;
 
     // Submits one frame while retaining its input until output completion.
     void Submit(int surfaceIndex, long long timestampMicroseconds) override;
@@ -55,6 +62,8 @@ private:
         bool eventRegistered = false;
     };
 
+    HANDLE _endEvent = nullptr;
+    bool _endEventRegistered = false;
     HMODULE _library = nullptr;
     NV_ENCODE_API_FUNCTION_LIST _api = {};
     void* _encoder = nullptr;
@@ -66,6 +75,11 @@ private:
     bool _asynchronous = false;
     bool _hevc = false;
     int _codec = 0;
+    bool _variableBitRate = false;
+    int _qp = 0, _lookahead = 0, _bFrames = 0;
+    bool _spatialAQ = false, _temporalAQ = false, _aqFallback = false, _draining = false;
+    long long _outputTimestamp = 0;
+    int _averageBitRate = 67200000, _maximumBitRate = 67200000, _constantQuality = 0;
 
     // Loads the current NVENC API entry points from the NVIDIA display driver.
     void LoadApi();

@@ -85,7 +85,7 @@ void NvencSession::Submit(int surfaceIndex, long long timestampMicroseconds)
     picture.inputTimeStamp = static_cast<uint64_t>(timestampMicroseconds);
     picture.completionEvent = surface.completionEvent;
     NVENCSTATUS status = _api.nvEncEncodePicture(_encoder, &picture);
-    if (status != NV_ENC_SUCCESS)
+    if (status != NV_ENC_SUCCESS && status != NV_ENC_ERR_NEED_MORE_INPUT)
     {
         _api.nvEncUnmapInputResource(_encoder, surface.mapped);
         surface.mapped = nullptr;
@@ -127,17 +127,29 @@ std::vector<NvencSession::Packet> NvencSession::Stop()
         return {};
     }
 
+    BeginDrain();
+    if (_asynchronous && WaitForSingleObject(_endEvent, 10000) != WAIT_OBJECT_0)
+        throw std::runtime_error("NVENC end-of-stream did not complete within ten seconds.");
+    ReleaseResources();
+    return {};
+}
+
+void NvencSession::BeginDrain()
+{
+    if (!_encoder || _draining) return;
     NV_ENC_PIC_PARAMS end = {};
     end.version = NV_ENC_PIC_PARAMS_VER;
     end.encodePicFlags = NV_ENC_PIC_FLAG_EOS;
-    end.completionEvent = _asynchronous ? _surfaces[0].completionEvent : nullptr;
+    end.completionEvent = _endEvent;
     Check(_api.nvEncEncodePicture(_encoder, &end), "nvEncEncodePicture(EOS)");
-    if (_asynchronous && WaitForSingleObject(end.completionEvent, 10000) != WAIT_OBJECT_0)
-    {
-        throw std::runtime_error("NVENC end-of-stream event did not signal within ten seconds.");
-    }
-    ReleaseResources();
-    return {};
+    _draining = true;
+}
+
+void NvencSession::ConfigureConstantQP(int qp)
+{
+    if (qp < 1 || qp > 51) throw std::invalid_argument("QP must be in [1, 51].");
+    _qp = qp;
+    _averageBitRate = _maximumBitRate = _constantQuality = 0;
 }
 
 // Loads the current NVENC API entry points from the NVIDIA display driver.
@@ -190,11 +202,31 @@ void NvencSession::ConfigureCodec(int codec)
 }
 
 // Reports the selected codec and the fixed quality configuration for benchmark logs.
+void NvencSession::ConfigureQuality(int averageBitRate, int maximumBitRate, int constantQuality)
+{
+    if (averageBitRate <= 0 || maximumBitRate < averageBitRate || constantQuality < 1 || constantQuality > 51)
+        throw std::invalid_argument("Invalid VBR quality configuration.");
+    _variableBitRate = true;
+    _averageBitRate = averageBitRate;
+    _maximumBitRate = maximumBitRate;
+    _constantQuality = constantQuality;
+}
+
 std::string NvencSession::DiagnosticsJson() const
 {
     return std::string("{\"codec\":\"") + (_hevc ? "hevc" : "h264") +
-        "\",\"preset\":" + std::to_string(_preset) +
-        ",\"tuning\":\"high-quality\",\"bitrate\":67200000,\"gop\":30,\"bFrames\":0,\"multipass\":false}";
+        "\",\"preset\":" + std::to_string(_preset) + ",\"tuning\":\"high-quality\",\"rateControl\":\"" +
+        (_qp ? "cqp" : (_variableBitRate ? "vbr" : "cbr")) + "\",\"qp\":" + std::to_string(_qp) +
+        ",\"qpIntra\":" + std::to_string(_qp) + ",\"qpInterP\":" + std::to_string(_qp) + ",\"qpInterB\":" + std::to_string(_qp) +
+        ",\"spatialAQRequested\":" + (_qp ? "true" : "false") + ",\"temporalAQRequested\":" + (_qp ? "true" : "false") +
+        ",\"bFramesRequested\":" + std::to_string(_qp ? 2 : 0) +
+        ",\"bitrate\":" + std::to_string(_averageBitRate) + ",\"maximumBitrate\":" + std::to_string(_maximumBitRate) +
+        ",\"constantQuality\":" + std::to_string(_constantQuality) + ",\"gop\":" + std::to_string(_qp ? 250 : 30) +
+        ",\"bFrames\":" + std::to_string(_bFrames) + ",\"lookaheadRequested\":" + std::to_string(_qp ? 8 : 0) +
+        ",\"lookaheadDepth\":" + std::to_string(_lookahead) + ",\"spatialAQ\":" + (_spatialAQ ? "true" : "false") +
+        ",\"aqStrength\":8,\"temporalAQ\":" + (_temporalAQ ? "true" : "false") +
+        ",\"aqFallback\":" + (_aqFallback ? "true" : "false") + ",\"vbvBufferSize\":" + std::to_string(_variableBitRate ? _maximumBitRate : 0) +
+        ",\"multipass\":false,\"bitDepth\":8,\"colorPrimaries\":1,\"transfer\":1,\"matrix\":1,\"fullRange\":false}";
 }
 
 // Applies the target H.264 High or HEVC Main 4:2:0 configuration and initializes NVENC.
@@ -204,6 +236,22 @@ void NvencSession::InitializeEncoder(int frameRate)
     const bool hevc = _codec == 2 || (_codec == 0 && GetEnvironmentVariableW(L"DIRECT3D_NVENC_HEVC", codecMode, 8) == 1 && codecMode[0] == L'1');
     _hevc = hevc;
     const GUID codec = hevc ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
+    auto capability = [&](NV_ENC_CAPS requested) {
+        NV_ENC_CAPS_PARAM caps = {}; caps.version = NV_ENC_CAPS_PARAM_VER; caps.capsToQuery = requested;
+        int value = 0;
+        Check(_api.nvEncGetEncodeCaps(_encoder, codec, &caps, &value), "nvEncGetEncodeCaps");
+        return value;
+    };
+    if (_width <= 0 || _height <= 0 || frameRate <= 0 || (_width & 1) || (_height & 1) ||
+        _width > capability(NV_ENC_CAPS_WIDTH_MAX) || _height > capability(NV_ENC_CAPS_HEIGHT_MAX))
+        throw std::invalid_argument("Video dimensions exceed encoder capabilities or are invalid for 4:2:0.");
+    if (_qp)
+    {
+        _lookahead = capability(NV_ENC_CAPS_SUPPORT_LOOKAHEAD) ? 8 : 0;
+        _bFrames = (std::min)(2, capability(NV_ENC_CAPS_NUM_MAX_BFRAMES));
+        _spatialAQ = true;
+        _temporalAQ = capability(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ) != 0;
+    }
     if (_asynchronous)
     {
         NV_ENC_CAPS_PARAM caps = {};
@@ -233,26 +281,53 @@ void NvencSession::InitializeEncoder(int frameRate)
     configuration.profileGUID = hevc ? NV_ENC_HEVC_PROFILE_MAIN_GUID : NV_ENC_H264_PROFILE_HIGH_GUID;
     configuration.gopLength = 30;
     configuration.frameIntervalP = 1;
-    configuration.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
-    configuration.rcParams.averageBitRate = 67200000;
-    configuration.rcParams.maxBitRate = 67200000;
-    configuration.rcParams.targetQuality = 0;
+    configuration.rcParams.rateControlMode = _variableBitRate ? NV_ENC_PARAMS_RC_VBR : NV_ENC_PARAMS_RC_CBR;
+    configuration.rcParams.averageBitRate = _averageBitRate;
+    configuration.rcParams.maxBitRate = _maximumBitRate;
+    configuration.rcParams.targetQuality = static_cast<uint8_t>(_constantQuality);
+    if (_variableBitRate)
+    {
+        configuration.rcParams.vbvBufferSize = _maximumBitRate;
+        configuration.rcParams.targetQualityLSB = 0;
+        configuration.rcParams.enableLookahead = 0;
+        configuration.rcParams.lookaheadDepth = 0;
+        configuration.rcParams.enableAQ = 0;
+        configuration.rcParams.enableTemporalAQ = 0;
+    }
     configuration.rcParams.multiPass = NV_ENC_MULTI_PASS_DISABLED;
+    if (_qp)
+    {
+        configuration.gopLength = 250;
+        configuration.frameIntervalP = _bFrames + 1;
+        auto& rc = configuration.rcParams;
+        rc.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+        rc.constQP.qpIntra = rc.constQP.qpInterP = rc.constQP.qpInterB = _qp;
+        rc.averageBitRate = rc.maxBitRate = rc.vbvBufferSize = rc.vbvInitialDelay = 0;
+        rc.targetQuality = rc.targetQualityLSB = 0;
+        rc.enableInitialRCQP = rc.enableMinQP = rc.enableMaxQP = 0;
+        rc.enableAQ = _spatialAQ; rc.aqStrength = 8; rc.enableTemporalAQ = _temporalAQ;
+        rc.enableLookahead = _lookahead != 0; rc.lookaheadDepth = static_cast<uint16_t>(_lookahead);
+        rc.disableIadapt = rc.disableBadapt = 0;
+    }
     if (hevc)
     {
         configuration.encodeCodecConfig.hevcConfig.chromaFormatIDC = 1;
         configuration.encodeCodecConfig.hevcConfig.inputBitDepth = NV_ENC_BIT_DEPTH_8;
         configuration.encodeCodecConfig.hevcConfig.outputBitDepth = NV_ENC_BIT_DEPTH_8;
-        configuration.encodeCodecConfig.hevcConfig.idrPeriod = 30;
+        configuration.encodeCodecConfig.hevcConfig.idrPeriod = _qp ? 250 : 30;
         configuration.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
+        configuration.encodeCodecConfig.hevcConfig.useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_DISABLED;
+        configuration.encodeCodecConfig.hevcConfig.enableFillerDataInsertion = 0;
     }
     else
     {
         configuration.encodeCodecConfig.h264Config.chromaFormatIDC = 1;
         configuration.encodeCodecConfig.h264Config.inputBitDepth = NV_ENC_BIT_DEPTH_8;
         configuration.encodeCodecConfig.h264Config.outputBitDepth = NV_ENC_BIT_DEPTH_8;
-        configuration.encodeCodecConfig.h264Config.idrPeriod = 30;
+        configuration.encodeCodecConfig.h264Config.idrPeriod = _qp ? 250 : 30;
         configuration.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+        configuration.encodeCodecConfig.h264Config.useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_DISABLED;
+        configuration.encodeCodecConfig.h264Config.enableFillerDataInsertion = 0;
     }
     NV_ENC_CONFIG_H264_VUI_PARAMETERS& vui =
         hevc ? configuration.encodeCodecConfig.hevcConfig.hevcVUIParameters : configuration.encodeCodecConfig.h264Config.h264VUIParameters;
@@ -277,7 +352,15 @@ void NvencSession::InitializeEncoder(int frameRate)
     initialize.enablePTD = 1;
     initialize.enableEncodeAsync = _asynchronous ? 1 : 0;
     initialize.encodeConfig = &configuration;
-    Check(_api.nvEncInitializeEncoder(_encoder, &initialize), "nvEncInitializeEncoder");
+    NVENCSTATUS status = _api.nvEncInitializeEncoder(_encoder, &initialize);
+    if (_qp && status == NV_ENC_ERR_INVALID_PARAM && (_spatialAQ || _temporalAQ))
+    {
+        configuration.rcParams.enableAQ = configuration.rcParams.enableTemporalAQ = 0;
+        _spatialAQ = _temporalAQ = false;
+        _aqFallback = true;
+        status = _api.nvEncInitializeEncoder(_encoder, &initialize);
+    }
+    Check(status, "nvEncInitializeEncoder");
 }
 
 // Allocates and registers the packed RGB Direct3D input textures.
@@ -292,7 +375,7 @@ void NvencSession::CreateInputSurfaces(ID3D11Device* device)
     description.SampleDesc.Count = 1;
     description.Usage = D3D11_USAGE_DEFAULT;
     description.BindFlags = D3D11_BIND_RENDER_TARGET;
-    _surfaces.resize(InputSurfaceCount);
+    _surfaces.resize(SurfaceCount());
     for (Surface& surface : _surfaces)
     {
         if (FAILED(device->CreateTexture2D(&description, nullptr, &surface.texture)))
@@ -315,6 +398,16 @@ void NvencSession::CreateInputSurfaces(ID3D11Device* device)
 // Allocates one encoded bitstream buffer per reusable input surface.
 void NvencSession::CreateBitstreams()
 {
+    if (_asynchronous)
+    {
+        _endEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!_endEvent) throw std::runtime_error("Cannot create the NVENC end-of-stream event.");
+        NV_ENC_EVENT_PARAMS event = {};
+        event.version = NV_ENC_EVENT_PARAMS_VER;
+        event.completionEvent = _endEvent;
+        Check(_api.nvEncRegisterAsyncEvent(_encoder, &event), "nvEncRegisterAsyncEvent(EOS)");
+        _endEventRegistered = true;
+    }
     for (Surface& surface : _surfaces)
     {
         NV_ENC_CREATE_BITSTREAM_BUFFER buffer = {};
@@ -356,6 +449,7 @@ NvencSession::Packet NvencSession::ReadBitstream(const Surface& surface)
     lock.doNotWait = _asynchronous ? 1 : 0;
     Check(_api.nvEncLockBitstream(_encoder, &lock), "nvEncLockBitstream");
     const auto* begin = static_cast<const unsigned char*>(lock.bitstreamBufferPtr);
+    _outputTimestamp = static_cast<long long>(lock.outputTimeStamp);
     Packet packet(begin, begin + lock.bitstreamSizeInBytes);
     Check(_api.nvEncUnlockBitstream(_encoder, surface.bitstream), "nvEncUnlockBitstream");
     return packet;
@@ -395,6 +489,13 @@ void NvencSession::ReleaseResources()
         }
     }
     _surfaces.clear();
+    if (_encoder && _endEventRegistered)
+    {
+        NV_ENC_EVENT_PARAMS event = {}; event.version = NV_ENC_EVENT_PARAMS_VER; event.completionEvent = _endEvent;
+        _api.nvEncUnregisterAsyncEvent(_encoder, &event);
+    }
+    if (_endEvent) CloseHandle(_endEvent);
+    _endEvent = nullptr; _endEventRegistered = false;
     if (_encoder)
     {
         _api.nvEncDestroyEncoder(_encoder);

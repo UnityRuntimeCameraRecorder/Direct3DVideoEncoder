@@ -11,6 +11,12 @@ class EncoderSession
 public:
     using Packet = std::vector<unsigned char>;
     static constexpr int InputSurfaceCount = 4;
+    virtual int SurfaceCount() const { return InputSurfaceCount; }
+    virtual void ConfigureConstantQP(int) { throw std::runtime_error("CQP is not supported by this encoder."); }
+    virtual bool UsesCompletionWorker() const { return UsesAsyncCompletion(); }
+    virtual int CompletionDelay() const { return 0; }
+    virtual void BeginDrain() {}
+    virtual long long OutputTimestamp(long long fallback) const { return fallback; }
     // Returns optional encoder configuration diagnostics without vendor-specific caller logic.
     virtual std::string DiagnosticsJson() const { return "{}"; }
 
@@ -21,6 +27,11 @@ public:
         {
             throw std::runtime_error("The selected codec is not supported by this encoder.");
         }
+    }
+
+    virtual void ConfigureQuality(int, int, int)
+    {
+        throw std::runtime_error("Quality profiles are not supported by this encoder.");
     }
 
     // Releases the concrete encoder through the common interface.
