@@ -155,7 +155,10 @@ namespace
                 _queued.fetch_add(1);
                 _frameReady.notify_one();
             }
-            catch (const std::exception& exception) { StoreError(exception); }
+            catch (const std::exception& exception)
+            {
+                StoreError(exception);
+            }
         }
 
         // Flushes the encoder and releases every instance resource.
@@ -182,7 +185,10 @@ namespace
             {
                 if (_encoder) { DeliverPackets(_encoder->Stop(), 0); _encoder.reset(); }
             }
-            catch (const std::exception& exception) { StoreError(exception); }
+            catch (const std::exception& exception)
+            {
+                StoreError(exception);
+            }
             if (_context) { _context->Release(); _context = nullptr; }
             for (ID3D11Query* query : _copyQueries)
             {
@@ -326,6 +332,7 @@ namespace
         {
             std::lock_guard<std::mutex> lock(_errorMutex);
             _lastError = exception.what();
+            OutputDebugStringA((_lastError + "\n").c_str());
         }
 
         // Encodes copied frames away from the render thread.
@@ -338,8 +345,15 @@ namespace
                 if (_readyFrames.empty() && !_workerRunning)
                 {
                     lock.unlock();
-                    try { _encoder->BeginDrain(); }
-                    catch (const std::exception& exception) { StoreError(exception); _failed = true; }
+                    try
+                    {
+                        _encoder->BeginDrain();
+                    }
+                    catch (const std::exception& exception)
+                    {
+                        StoreError(exception);
+                        _failed = true;
+                    }
                     lock.lock();
                     while (!_delayedFrames.empty()) { _outputFrames.push_back(_delayedFrames.front()); _delayedFrames.pop_front(); }
                     _outputReady.notify_one();

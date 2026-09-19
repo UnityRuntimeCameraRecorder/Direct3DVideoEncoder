@@ -4,6 +4,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <Windows.h>
 #include "Common/CaptureSession.h"
 #include "D3D11/CaptureSessionFactory.h"
 
@@ -14,6 +15,13 @@ namespace
     std::atomic<int> nextInstanceId = 1;
     thread_local std::string exportedError;
     thread_local std::string exportedTelemetry;
+
+    // Stores and writes an exported native error to the Windows diagnostic stream.
+    void ReportExportedError(const std::exception& exception)
+    {
+        exportedError = exception.what();
+        OutputDebugStringA((exportedError + "\n").c_str());
+    }
 
     // Finds an instance while retaining it beyond the registry lock.
     std::shared_ptr<CaptureSession> FindInstance(int id)
@@ -51,7 +59,11 @@ extern "C"
             exportedError.clear();
             return id;
         }
-        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+        catch (const std::exception& exception)
+        {
+            ReportExportedError(exception);
+            return 0;
+        }
     }
 
     // Creates a CQP session with an explicit preset and optional multi-output optimizations.
@@ -70,7 +82,11 @@ extern "C"
             exportedError.clear();
             return id;
         }
-        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+        catch (const std::exception& exception)
+        {
+            ReportExportedError(exception);
+            return 0;
+        }
     }
 
     // Creates an independent session with an explicit codec: 1 is H.264 and 2 is HEVC.
@@ -95,7 +111,11 @@ extern "C"
             exportedError.clear();
             return id;
         }
-        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+        catch (const std::exception& exception)
+        {
+            ReportExportedError(exception);
+            return 0;
+        }
     }
 
     // Creates an independent session with an explicit codec: 1 is H.264 and 2 is HEVC.
@@ -118,7 +138,11 @@ extern "C"
             exportedError.clear();
             return id;
         }
-        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+        catch (const std::exception& exception)
+        {
+            ReportExportedError(exception);
+            return 0;
+        }
     }
 
     // Creates an independent encoder and returns its positive identifier.
@@ -142,7 +166,11 @@ extern "C"
             exportedError.clear();
             return id;
         }
-        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+        catch (const std::exception& exception)
+        {
+            ReportExportedError(exception);
+            return 0;
+        }
     }
 
     // Queues a texture for one encoder instance.
