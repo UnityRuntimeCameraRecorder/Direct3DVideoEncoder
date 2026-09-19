@@ -2,7 +2,7 @@
 
 A native Windows DLL that encodes Direct3D 11 GPU textures into H.264 or HEVC video packets using NVIDIA NVENC.
 
-Used by [UnityMediaRecorder](https://github.com/end3rbyte/UnityMediaRecorder) for GPU video encoding. The DLL itself does not depend on Unity or FFmpeg.
+Used by [UnityRuntimeCameraRecorder](https://github.com/end3rbyte/UnityRuntimeCameraRecorder) for GPU video encoding. The DLL itself does not depend on Unity or FFmpeg.
 
 ## Requirements
 
@@ -14,7 +14,7 @@ Start a session, queue rendered textures with timestamps in microseconds, and di
 
 Stop and destroy the session when finished. Keep textures and callbacks alive until encoding stops; copy callback data before returning.
 
-For Unity integration and camera/audio/MP4 recording, use [UnityMediaRecorder](https://github.com/end3rbyte/UnityMediaRecorder).
+For Unity integration and camera/audio/MP4 recording, use [UnityRuntimeCameraRecorder](https://github.com/end3rbyte/UnityRuntimeCameraRecorder).
 
 ## Build
 
