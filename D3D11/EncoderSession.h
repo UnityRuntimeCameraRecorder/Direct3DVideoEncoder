@@ -13,6 +13,7 @@ public:
     static constexpr int InputSurfaceCount = 4;
     virtual int SurfaceCount() const { return InputSurfaceCount; }
     virtual void ConfigureConstantQP(int) { throw std::runtime_error("CQP is not supported by this encoder."); }
+    virtual void ConfigureConcurrentEncoding(bool) {}
     virtual bool UsesCompletionWorker() const { return UsesAsyncCompletion(); }
     virtual int CompletionDelay() const { return 0; }
     virtual void BeginDrain() {}

@@ -218,11 +218,11 @@ std::string NvencSession::DiagnosticsJson() const
         "\",\"preset\":" + std::to_string(_preset) + ",\"tuning\":\"high-quality\",\"rateControl\":\"" +
         (_qp ? "cqp" : (_variableBitRate ? "vbr" : "cbr")) + "\",\"qp\":" + std::to_string(_qp) +
         ",\"qpIntra\":" + std::to_string(_qp) + ",\"qpInterP\":" + std::to_string(_qp) + ",\"qpInterB\":" + std::to_string(_qp) +
-        ",\"spatialAQRequested\":" + (_qp ? "true" : "false") + ",\"temporalAQRequested\":" + (_qp ? "true" : "false") +
+        ",\"spatialAQRequested\":" + (_qp ? "true" : "false") + ",\"temporalAQRequested\":" + (_qp && !_concurrentEncoding ? "true" : "false") +
         ",\"bFramesRequested\":" + std::to_string(_qp ? 2 : 0) +
         ",\"bitrate\":" + std::to_string(_averageBitRate) + ",\"maximumBitrate\":" + std::to_string(_maximumBitRate) +
         ",\"constantQuality\":" + std::to_string(_constantQuality) + ",\"gop\":" + std::to_string(_qp ? 250 : 30) +
-        ",\"bFrames\":" + std::to_string(_bFrames) + ",\"lookaheadRequested\":" + std::to_string(_qp ? 8 : 0) +
+        ",\"bFrames\":" + std::to_string(_bFrames) + ",\"lookaheadRequested\":" + std::to_string(_qp && !_concurrentEncoding ? 8 : 0) +
         ",\"lookaheadDepth\":" + std::to_string(_lookahead) + ",\"spatialAQ\":" + (_spatialAQ ? "true" : "false") +
         ",\"aqStrength\":8,\"temporalAQ\":" + (_temporalAQ ? "true" : "false") +
         ",\"aqFallback\":" + (_aqFallback ? "true" : "false") + ",\"vbvBufferSize\":" + std::to_string(_variableBitRate ? _maximumBitRate : 0) +
@@ -247,10 +247,10 @@ void NvencSession::InitializeEncoder(int frameRate)
         throw std::invalid_argument("Video dimensions exceed encoder capabilities or are invalid for 4:2:0.");
     if (_qp)
     {
-        _lookahead = capability(NV_ENC_CAPS_SUPPORT_LOOKAHEAD) ? 8 : 0;
+        _lookahead = !_concurrentEncoding && capability(NV_ENC_CAPS_SUPPORT_LOOKAHEAD) ? 8 : 0;
         _bFrames = (std::min)(2, capability(NV_ENC_CAPS_NUM_MAX_BFRAMES));
         _spatialAQ = true;
-        _temporalAQ = capability(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ) != 0;
+        _temporalAQ = !_concurrentEncoding && capability(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ) != 0;
     }
     if (_asynchronous)
     {

@@ -54,6 +54,25 @@ extern "C"
         catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
     }
 
+    // Creates a CQP session with an explicit preset and optional multi-output optimizations.
+    __declspec(dllexport) int __stdcall Direct3DVideoEncoderStartWithConstantQPOptions(
+        void* texture, int width, int height, int frameRate, int preset, int codec, int qp, int concurrentEncoding, PacketCallback callback)
+    {
+        try
+        {
+            if (codec != 1 && codec != 2) throw std::invalid_argument("Invalid SDR video codec.");
+            if (preset < 1 || preset > 7 || width <= 0 || height <= 0 || (width & 1) || (height & 1) || frameRate <= 0 || qp < 1 || qp > 51)
+                throw std::invalid_argument("Invalid SDR dimensions, frame rate, preset or QP.");
+            auto instance = CreateD3D11CaptureSession(texture, width, height, frameRate, preset, callback, codec, 0, 0, 0, qp, concurrentEncoding != 0);
+            int id = nextInstanceId.fetch_add(1);
+            if (id <= 0) throw std::overflow_error("Encoder identifiers exhausted.");
+            { std::lock_guard<std::mutex> lock(registryMutex); instances.emplace(id, std::move(instance)); }
+            exportedError.clear();
+            return id;
+        }
+        catch (const std::exception& exception) { exportedError = exception.what(); return 0; }
+    }
+
     // Creates an independent session with an explicit codec: 1 is H.264 and 2 is HEVC.
     __declspec(dllexport) int __stdcall Direct3DVideoEncoderStartWithQuality(
         void* texture, int width, int height, int frameRate, int preset, int codec, int averageBitRate, int maximumBitRate, int constantQuality, PacketCallback callback)

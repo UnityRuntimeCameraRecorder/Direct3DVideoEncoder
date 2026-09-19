@@ -34,6 +34,7 @@ public:
     // Selects H.264 or HEVC before starting this independent session.
     void ConfigureCodec(int codec) override;
     void ConfigureConstantQP(int qp) override;
+    void ConfigureConcurrentEncoding(bool enabled) override { _concurrentEncoding = enabled; }
     int SurfaceCount() const override { return _qp ? 16 : InputSurfaceCount; }
     bool UsesCompletionWorker() const override { return _asynchronous || _qp != 0; }
     int CompletionDelay() const override { return !_asynchronous && _qp ? _lookahead + _bFrames + 3 : 0; }
@@ -77,7 +78,7 @@ private:
     int _codec = 0;
     bool _variableBitRate = false;
     int _qp = 0, _lookahead = 0, _bFrames = 0;
-    bool _spatialAQ = false, _temporalAQ = false, _aqFallback = false, _draining = false;
+    bool _spatialAQ = false, _temporalAQ = false, _aqFallback = false, _draining = false, _concurrentEncoding = false;
     long long _outputTimestamp = 0;
     int _averageBitRate = 67200000, _maximumBitRate = 67200000, _constantQuality = 0;
 

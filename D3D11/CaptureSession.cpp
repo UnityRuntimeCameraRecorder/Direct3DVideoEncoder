@@ -37,7 +37,7 @@ namespace
             int frameRate,
             int preset,
             PacketCallback callback,
-            int codec, int averageBitRate, int maximumBitRate, int constantQuality, int quantizationParameter)
+            int codec, int averageBitRate, int maximumBitRate, int constantQuality, int quantizationParameter, bool concurrentEncoding)
         {
             std::lock_guard<std::mutex> lock(_captureMutex);
             auto* texture = static_cast<ID3D11Texture2D*>(texturePointer);
@@ -63,6 +63,7 @@ namespace
                     _encoder->ConfigureCodec(codec);
                 }
                 if (quantizationParameter > 0) _encoder->ConfigureConstantQP(quantizationParameter);
+                _encoder->ConfigureConcurrentEncoding(concurrentEncoding);
                 if (averageBitRate > 0) _encoder->ConfigureQuality(averageBitRate, maximumBitRate, constantQuality);
                 _encoder->Start(device, description.Format, width, height, frameRate, preset);
                 D3D11_QUERY_DESC queryDescription = {};
@@ -431,9 +432,9 @@ namespace
 
 // Initializes a Direct3D 11 capture session behind the common lifecycle interface.
 std::shared_ptr<CaptureSession> CreateD3D11CaptureSession(
-    void* texture, int width, int height, int frameRate, int preset, PacketCallback callback, int codec, int averageBitRate, int maximumBitRate, int constantQuality, int quantizationParameter)
+    void* texture, int width, int height, int frameRate, int preset, PacketCallback callback, int codec, int averageBitRate, int maximumBitRate, int constantQuality, int quantizationParameter, bool concurrentEncoding)
 {
     auto instance = std::make_shared<D3D11CaptureSession>();
-    instance->Start(texture, width, height, frameRate, preset, callback, codec, averageBitRate, maximumBitRate, constantQuality, quantizationParameter);
+    instance->Start(texture, width, height, frameRate, preset, callback, codec, averageBitRate, maximumBitRate, constantQuality, quantizationParameter, concurrentEncoding);
     return instance;
 }
