@@ -45,10 +45,9 @@ jobs:
       - name: Package snapshot
         run: |
           $snapshot = 'build/snapshot'
-          New-Item -ItemType Directory -Path "$snapshot/Common" -Force | Out-Null
-          Copy-Item -LiteralPath 'build/x64/Release/Direct3DVideoEncoder.dll', 'build/x64/Release/Direct3DVideoEncoder.lib', 'LICENSE', 'README.md' -Destination $snapshot
-          # Preserve the NVIDIA header's original copyright and license notice.
-          Copy-Item -LiteralPath 'Common/nvEncodeAPI.h' -Destination "$snapshot/Common"
+          Remove-Item -LiteralPath $snapshot -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $snapshot -Force | Out-Null
+          Copy-Item -LiteralPath 'build/x64/Release/Direct3DVideoEncoder.dll', 'LICENSE', 'README.md' -Destination $snapshot
           $dll = Get-Item -LiteralPath "$snapshot/Direct3DVideoEncoder.dll"
           if ($dll.Length -eq 0) {
             throw 'The compiled DLL is empty.'
